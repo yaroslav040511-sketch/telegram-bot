@@ -1,7 +1,5 @@
 *.log
 
-dbi/
-
-node-modules/
+db/
 
 todo
