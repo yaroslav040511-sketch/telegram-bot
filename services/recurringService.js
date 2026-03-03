@@ -1,4 +1,4 @@
-const db = require("../models/db");
+// const db = require("../models/db");
 const { addTransaction } = require("./ledgerService");
 
 function addRecurring(description, postings, frequency, nextDueDate) {
@@ -52,4 +52,59 @@ function processRecurring() {
   return due.length;
 }
 
-module.exports = { addRecurring, processRecurring };
+const db = require("../models/db");
+
+function calculateNextRun(date, frequency) {
+  const d = new Date(date);
+
+  if (frequency === "monthly") {
+    d.setMonth(d.getMonth() + 1);
+  }
+
+  if (frequency === "weekly") {
+    d.setDate(d.getDate() + 7);
+  }
+
+  if (frequency === "daily") {
+    d.setDate(d.getDate() + 1);
+  }
+
+  return d.toISOString().split("T")[0];
+}
+
+function getRecurringTransactions() {
+  return db.prepare(`
+    SELECT *
+    FROM recurring_transactions
+    ORDER BY id DESC
+  `).all();
+
+  return rows.map(r => ({
+    ...r,
+    next_run: calculateNextRun(r.date, r.frequency)
+  }));
+}
+
+function calculateNextRun(date, frequency) {
+  const d = new Date(date);
+
+  if (frequency === "monthly") {
+    d.setMonth(d.getMonth() + 1);
+  }
+
+  if (frequency === "weekly") {
+    d.setDate(d.getDate() + 7);
+  }
+
+  if (frequency === "daily") {
+    d.setDate(d.getDate() + 1);
+  }
+
+  return d.toISOString().split("T")[0];
+}
+
+module.exports = {
+  addRecurring,
+  processRecurring,
+  getRecurringTransactions
+};

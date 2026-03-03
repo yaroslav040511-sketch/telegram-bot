@@ -1,19 +1,36 @@
+/* =====================================================
+   DEPENDENCIES
+===================================================== */
+
+// External packages
 const TelegramBot = require("node-telegram-bot-api");
 const OpenAI = require("openai");
 const cron = require("node-cron");
-const { addTransaction, deleteLastTransaction } = require("./services/ledgerService");
-const { addRecurring, processRecurring } = require("./services/recurringService");
-const {
-  getBalances,
-  getIncomeStatement,
-  getNetWorthData,
-  getLast30DayIncomeAndExpenses,
-  getRecurringTransactions
-} = require("./services/reportService");
+
+// Database (centralized instance)
+const db = require("./models/db");
+
+// Core modules
+const { simulateCashflow } = require("./core/simulation");
+
+// Services (full service objects)
+const reportService = require("./services/reportService");
+const ledgerService = require("./services/ledgerService");
+const recurringService = require("./services/recurringService");
+
+// Handlers
+const registerWhatIfHandler = require("./handlers/whatif");
+const registerBalanceHandler = require("./handlers/balance");
+const registerReportHandler = require("./handlers/report");
+const registerIncomeHandler = require("./handlers/income");
+const registerNetWorthHandler = require("./handlers/networth");
+const registerSafetyHandler = require("./handlers/safety");
+const registerLedgerHandler = require("./handlers/ledger");
+const registerRecurringHandler = require("./handlers/recurring");
 
 
 /* =====================================================
-   ENV CHECKS
+   ENVIRONMENT CHECKS
 ===================================================== */
 
 if (!process.env.TELEGRAM_BOT_TOKEN) {
@@ -26,75 +43,68 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 
+
 /* =====================================================
-   CLIENTS
+   INITIALIZATION
 ===================================================== */
 
+// Telegram Bot
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   polling: true
 });
 
+// OpenAI / OpenRouter client
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-  baseURL: "https://openrouter.ai/api/v1" // remove if not using OpenRouter
+  baseURL: "https://openrouter.ai/api/v1"
 });
 
-/* ==================================
- * Extract Simulation Into a Function
- * ================================== */
 
-function simulateCashflow(startBalance, checkingId, daysForward = 30) {
+/* =====================================================
+   REGISTER HANDLERS
+===================================================== */
 
-  let projectedBalance = startBalance;
-  let lowestBalance = startBalance;
-  let lowestDate = null;
-  let lowestTrigger = null;
+registerWhatIfHandler(bot, db, simulateCashflow);
+registerBalanceHandler(bot, db);
 
-  const now = new Date();
-  const endDate = new Date(now);
-  endDate.setDate(now.getDate() + daysForward);
+registerReportHandler(bot, db, reportService);
+registerIncomeHandler(bot, db, reportService);
+registerNetWorthHandler(bot, db, reportService);
+registerSafetyHandler(bot, db, reportService);
 
-  const endDateString = endDate.toISOString().split("T")[0];
+registerLedgerHandler(bot, db, ledgerService);
+registerRecurringHandler(bot, db, recurringService);
 
-  const recurring = db.prepare(`
-    SELECT *
-    FROM recurring_transactions
-    WHERE next_run <= ?
-    ORDER BY next_run ASC
-  `).all(endDateString);
+// (other registerXYZHandler calls will go here later)
+//
 
-  const timeline = [];
+/* =========== ADD ================== */
 
-  for (const r of recurring) {
+bot.onText(/^\/add (.+) (\d+(\.\d+)?)$/, (msg, match) => {
+  try {
+    const description = match[1];
+    const amount = parseFloat(match[2]);
+    const date = new Date().toISOString().split("T")[0];
 
-    if (r.debit_account_id === checkingId) {
-      projectedBalance += r.amount;
-    }
+    const transaction = {
+      date,
+      description,
+      postings: [
+        { account: "expenses:food", amount: amount },
+        { account: "assets:bank", amount: -amount }
+      ]
+    };
 
-    if (r.credit_account_id === checkingId) {
-      projectedBalance -= r.amount;
-    }
+    ledgerService.addTransaction(transaction);
 
-    timeline.push({
-      date: r.next_run,
-      description: r.description,
-      balance: projectedBalance
-    });
+    bot.sendMessage(msg.chat.id, "Transaction added.");
+    console.log("ADD handler triggered");
 
-    if (projectedBalance < lowestBalance) {
-      lowestBalance = projectedBalance;
-      lowestDate = r.next_run;
-      lowestTrigger = r.description;
-    }
+  } catch (err) {
+    console.error(err);
+    bot.sendMessage(msg.chat.id, "Failed to add transaction.");
   }
-
-  return {
-    lowestBalance,
-    lowestDate,
-    lowestTrigger,
-    timeline
-  };
-}
+});
 
 /* ==================================
  * UNDO
@@ -193,45 +203,6 @@ cron.schedule("0 0 * * *", () => {
    COMMANDS
 ===================================================== */
 
-bot.onText(/\/income/, (msg) => {
-  try {
-    const rows = getIncomeStatement();
-    if (!rows.length) {
-      return bot.sendMessage(msg.chat.id, "No income or expenses recorded.");
-    }
-
-    let output = "📄 Profit & Loss Statement\n\n";
-
-    rows.forEach(r => {
-      output += `${r.account} : ${r.balance}\n`;
-    });
-
-    bot.sendMessage(msg.chat.id, output);
-  } catch (err) {
-    console.error(err);
-    bot.sendMessage(msg.chat.id, "Error generating income statement.");
-  }
-});
-
-bot.onText(/\/networth/, (msg) => {
-  try {
-    const rows = getNetWorthData();
-    if (!rows.length) {
-      return bot.sendMessage(msg.chat.id, "No assets or liabilities recorded.");
-    }
-
-    let output = "💰 Net Worth Statement\n\n";
-
-    rows.forEach(r => {
-      output += `${r.account} : ${r.balance}\n`;
-    });
-
-    bot.sendMessage(msg.chat.id, output);
-  } catch (err) {
-    console.error(err);
-    bot.sendMessage(msg.chat.id, "Error generating net worth.");
-  }
-});
 
 /* ==================================================
  * RUNWAY
@@ -327,7 +298,7 @@ bot.onText(/\/runway/, (msg) => {
 
     const currentBalance = Number(balanceRow?.balance) || 0;
 
-    const result = simulateCashflow(currentBalance, checking.id, 30);
+    const result = simulateCashflow(db,currentBalance, checking.id, 30);
 
     let output = "📊 30-Day Forecast\n\n";
     output += `Starting Balance: ${currentBalance.toFixed(2)}\n\n`;
@@ -762,227 +733,9 @@ bot.onText(/^\/status(@\w+)?$/, async (msg) => {
   } catch (err) {
     console.error("Status error:", err);
     return bot.sendMessage(msg.chat.id, "Error retrieving status.");
-  }
+  }	  
 });
 
-/* =====================================================
-   BALANCE (INTERNAL)
-===================================================== */
-
-bot.onText(/^\/balance(@\w+)?$/, async (msg) => {
-  try {
-    const balances = await getBalances();
-
-    if (!balances.length) {
-      return bot.sendMessage(msg.chat.id, "No balances found.");
-    }
-
-    let output = "📊 Account Balances\n\n";
-
-    let total = 0;
-
-    for (const b of balances) {
-      const amount = Number(b.balance) || 0;
-      total += amount;
-
-      output += `${b.account}: ${amount.toFixed(2)}\n`;
-    }
-
-    output += `\nNet Total: ${total.toFixed(2)}`;
-
-    return bot.sendMessage(msg.chat.id, output);
-
-  } catch (err) {
-    console.error("Balance error:", err);
-    return bot.sendMessage(msg.chat.id, "Error retrieving balances.");
-  }
-});
-
-/* =====================================================
-   MONTHLY REPORT (better-sqlite3 version)
-===================================================== */
-
-const db = require("./models/db");
-
-bot.onText(/^\/report(@\w+)?$/, (msg) => {
-  try {
-    const now = new Date();
-    const startOfMonth = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      1
-    ).toISOString();
-
-    const rows = db.prepare(`
-      SELECT a.name as account,
-             SUM(p.amount) as total
-      FROM postings p
-      JOIN transactions t ON p.transaction_id = t.id
-      JOIN accounts a ON p.account_id = a.id
-      WHERE t.date >= ?
-      GROUP BY a.name
-    `).all(startOfMonth);
-
-    let income = 0;
-    let expenses = 0;
-    const categoryTotals = {};
-
-    for (const row of rows) {
-      const amount = Number(row.total) || 0;
-
-      // Income (stored negative)
-      if (row.account.startsWith("income:")) {
-        income += -amount;
-      }
-
-      // Expenses
-      if (row.account.startsWith("expenses:")) {
-        expenses += amount;
-
-        // Roll up to root category
-        const parts = row.account.split(":");
-        const rootCategory = parts[1] || "other";
-
-        if (!categoryTotals[rootCategory]) {
-          categoryTotals[rootCategory] = 0;
-        }
-
-        categoryTotals[rootCategory] += amount;
-      }
-    }
-
-    const net = income - expenses;
-
-    let statusLine;
-
-    if (net > 0) {
-    statusLine = "Status: ✓ On track";
-  } else if (net < 0) {
-    statusLine = "Status: ⚠ Over budget";
-  } else {
-    statusLine = "Status: ⚖ Break even";
-  }
-    let output = "📅 Monthly Report\n\n";
-    output += `📈 Income: ${income.toFixed(2)}\n`;
-    output += `📉 Expenses: ${expenses.toFixed(2)}\n`;
-    output += `💰 Net: ${net.toFixed(2)}\n`;
-    output += `${statusLine}\n\n`;
-    const sortedCategories = Object.entries(categoryTotals)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
-
-    if (sortedCategories.length > 0) {
-      output += "Top Categories:\n";
-
-      for (const [category, total] of sortedCategories) {
-        output += `• ${category}: ${total.toFixed(2)}\n`;
-      }
-    }
-
-    bot.sendMessage(msg.chat.id, output);
-
-  } catch (err) {
-    console.error("Report error:", err);
-    bot.sendMessage(msg.chat.id, "Error generating report.");
-  }
-});
-
-/* =====================================================
-   OVERDRAFT SAFETY FORECAST (FINAL CLEAN VERSION)
-===================================================== */
-
-bot.onText(/^\/safety(@\w+)?$/, (msg) => {
-  try {
-
-    console.log("Safety command triggered");
-
-    // 1️⃣ Get checking account (adjust name if needed)
-    const checking = db.prepare(`
-      SELECT id FROM accounts
-      WHERE name = 'assets:bank'
-    `).get();
-
-    if (!checking) {
-      return bot.sendMessage(msg.chat.id, "Checking account not found.");
-    }
-
-    // 2️⃣ Current balance
-    const balanceRow = db.prepare(`
-      SELECT SUM(amount) as balance
-      FROM postings
-      WHERE account_id = ?
-    `).get(checking.id);
-
-    let currentBalance = Number(balanceRow?.balance) || 0;
-    let projectedBalance = currentBalance;
-    let lowestBalance = currentBalance;
-    let lowestDate = null;
-    let lowestTrigger = null;
-
-    // 3️⃣ End of month
-    const now = new Date();
-    const endOfMonth = new Date(
-      now.getFullYear(),
-      now.getMonth() + 1,
-      1
-    );
-
-    const endDateString = endOfMonth.toISOString().split("T")[0];
-
-    // 4️⃣ Get recurring sorted by date
-    const recurring = db.prepare(`
-      SELECT *
-      FROM recurring_transactions
-      WHERE next_run < ?
-      ORDER BY next_run ASC
-    `).all(endDateString);
-
-    // 5️⃣ Simulate chronologically
-    for (const r of recurring) {
-
-      // Debit increases asset
-      if (r.debit_account_id === checking.id) {
-        projectedBalance += r.amount;
-      }
-
-      // Credit decreases asset
-      if (r.credit_account_id === checking.id) {
-        projectedBalance -= r.amount;
-      }
-
-      if (projectedBalance < lowestBalance) {
-        lowestBalance = projectedBalance;
-        lowestDate = r.next_run;
-        lowestTrigger = r.description;
-      }
-    }
-
-    // 6️⃣ Build output
-    let output = "🛡 Overdraft Safety Check\n\n";
-    output += `Current Balance: ${currentBalance.toFixed(2)}\n`;
-    output += `Projected Lowest Balance: ${lowestBalance.toFixed(2)}\n`;
-
-    if (lowestDate) {
-      output += `Lowest On: ${lowestDate}\n`;
-      output += `Caused By: ${lowestTrigger}\n`;
-    }
-
-    output += "\n";
-
-    if (lowestBalance < 0) {
-      output += "Status: ⚠ Risk of overdraft\n";
-      output += `Minimum Needed: ${Math.abs(lowestBalance).toFixed(2)} buffer`;
-    } else {
-      output += "Status: ✓ Safe";
-    }
-
-    return bot.sendMessage(msg.chat.id, output);
-
-  } catch (err) {
-    console.error("Safety error:", err);
-    return bot.sendMessage(msg.chat.id, "Error calculating safety.");
-  }
-});
 
 /* ======================================
  * BUFFER

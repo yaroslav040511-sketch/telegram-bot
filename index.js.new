@@ -1,0 +1,80 @@
+/* ================================
+   DEPENDENCIES
+================================ */
+
+const TelegramBot = require("node-telegram-bot-api");
+const OpenAI = require("openai");
+const cron = require("node-cron");
+
+const db = require("./models/db");
+
+/* ================================
+   CORE
+================================ */
+
+const { simulateCashflow } = require("./core/simulation");
+
+/* ================================
+   SERVICES
+================================ */
+
+const ledgerService = require("./services/ledgerService");
+const recurringService = require("./services/recurringService");
+const reportService = require("./services/reportService");
+
+/* ================================
+   HANDLERS
+================================ */
+
+const registerBalanceHandler = require("./handlers/balance");
+const registerReportHandler = require("./handlers/report");
+const registerWhatIfHandler = require("./handlers/whatif");
+const registerRecurringHandler = require("./handlers/recurring");
+const registerForecastHandler = require("./handlers/forecast");
+const registerAIHandler = require("./handlers/ai");
+
+/* ================================
+   ENV CHECKS
+================================ */
+
+if (!process.env.TELEGRAM_BOT_TOKEN) {
+  console.error("TELEGRAM_BOT_TOKEN not set");
+  process.exit(1);
+}
+
+if (!process.env.OPENAI_API_KEY) {
+  console.error("OPENAI_API_KEY not set");
+  process.exit(1);
+}
+
+/* ================================
+   INITIALIZATION
+================================ */
+
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
+  polling: true
+});
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: "https://openrouter.ai/api/v1"
+});
+
+/* ================================
+   REGISTER HANDLERS
+================================ */
+
+registerBalanceHandler(bot, db);
+registerReportHandler(bot, db, reportService);
+registerWhatIfHandler(bot, db, simulateCashflow);
+registerRecurringHandler(bot, db, recurringService);
+registerForecastHandler(bot, db, simulateCashflow);
+registerAIHandler(bot, db, openai);
+
+/* ================================
+   CRON JOBS
+================================ */
+
+cron.schedule("0 0 * * *", () => {
+  recurringService.processRecurring(db);
+});

@@ -122,7 +122,25 @@ function deleteLastTransaction() {
   return last;
 }
 
+  function getLedger(limit = 20, offset = 0) {
+  return db.prepare(`
+    SELECT 
+      t.id as transaction_id,
+      t.date,
+      t.description,
+      a.name as account,
+      p.amount
+    FROM transactions t
+    JOIN postings p ON p.transaction_id = t.id
+    JOIN accounts a ON a.id = p.account_id
+    ORDER BY t.id DESC
+    LIMIT ? OFFSET ?
+  `).all(limit, offset);
+
+}
+
 module.exports = {
   addTransaction,
-  deleteLastTransaction
+  deleteLastTransaction,
+  getLedger
 };

@@ -1,86 +1,72 @@
 const db = require("../models/db");
 
-function getBalances() {
-  const stmt = db.prepare(`
-    SELECT 
-      a.name as account,
-      a.type as type,
-      IFNULL(SUM(p.amount), 0) as balance
-    FROM accounts a
-    LEFT JOIN postings p ON a.id = p.account_id
-    GROUP BY a.id
-    ORDER BY a.name
-  `);
-
-  return stmt.all();
-}
-
-function getIncomeStatement() {
+/*
+  Net Worth = Assets - Liabilities
+*/
+function getNetWorth() {
   const stmt = db.prepare(`
     SELECT
-      a.type,
-      a.name as account,
-      IFNULL(SUM(p.amount), 0) as balance
-    FROM accounts a
-    LEFT JOIN postings p ON a.id = p.account_id
-    WHERE a.type IN ('income', 'expenses')
-    GROUP BY a.id
-    ORDER BY a.type, a.name
+      LOWER(a.type) as type,
+      IFNULL(SUM(p.amount), 0) as total
+    FROM postings p
+    JOIN accounts a ON a.id = p.account_id
+    GROUP BY LOWER(a.type)
   `);
 
-  return stmt.all();
+  const rows = stmt.all();
+
+  let assets = 0;
+  let liabilities = 0;
+
+  for (const row of rows) {
+    if (row.type === "assets") {
+      assets = row.total;
+    }
+    if (row.type === "liabilities") {
+      liabilities = row.total;
+    }
+  }
+
+  return assets - liabilities;
 }
 
-function getNetWorthData() {
-  const stmt = db.prepare(`
-    SELECT
-      a.type,
-      a.name as account,
-      IFNULL(SUM(p.amount), 0) as balance
-    FROM accounts a
-    LEFT JOIN postings p ON a.id = p.account_id
-    WHERE a.type IN ('assets', 'liabilities')
-    GROUP BY a.id
-    ORDER BY a.type, a.name
-  `);
-
-  return stmt.all();
-}
-
+/*
+  Last 30 Days Income & Expenses
+*/
 function getLast30DayIncomeAndExpenses() {
   const stmt = db.prepare(`
     SELECT
-      a.type,
+      LOWER(a.type) as type,
       IFNULL(SUM(p.amount), 0) as total
     FROM postings p
     JOIN accounts a ON a.id = p.account_id
     JOIN transactions t ON t.id = p.transaction_id
-    WHERE a.type IN ('income', 'expenses')
+    WHERE LOWER(a.type) IN ('income', 'expenses')
       AND date(t.date) >= date('now', '-30 days')
-    GROUP BY a.type
+    GROUP BY LOWER(a.type)
   `);
 
-  return stmt.all();
-}
+  const rows = stmt.all();
 
-function getRecurringTransactions() {
-  const stmt = db.prepare(`
-    SELECT
-      rt.*,
-      da.name as debit_account,
-      ca.name as credit_account
-    FROM recurring_transactions rt
-    JOIN accounts da ON da.id = rt.debit_account_id
-    JOIN accounts ca ON ca.id = rt.credit_account_id
-  `);
+  let income = 0;
+  let expenses = 0;
 
-  return stmt.all();
+  for (const row of rows) {
+    if (row.type === "income") {
+      income = row.total;
+    }
+    if (row.type === "expenses") {
+      expenses = row.total;
+    }
+  }
+
+  return {
+    income,
+    expenses
+  };
 }
 
 module.exports = {
-  getBalances,
-  getIncomeStatement,
-  getNetWorthData,
-  getLast30DayIncomeAndExpenses,
-  getRecurringTransactions
+  getNetWorth,
+  getLast30DayIncomeAndExpenses
 };

@@ -13,20 +13,27 @@ const db = require("./models/db");
 // Core modules
 const { simulateCashflow } = require("./core/simulation");
 
-// Services (full service objects)
-const reportService = require("./services/reportService");
-const ledgerService = require("./services/ledgerService");
-const recurringService = require("./services/recurringService");
-
 // Handlers
 const registerWhatIfHandler = require("./handlers/whatif");
 const registerBalanceHandler = require("./handlers/balance");
 const registerReportHandler = require("./handlers/report");
 const registerIncomeHandler = require("./handlers/income");
 const registerNetWorthHandler = require("./handlers/networth");
+const reportService = require("./services/reportService");
 const registerSafetyHandler = require("./handlers/safety");
 const registerLedgerHandler = require("./handlers/ledger");
 const registerRecurringHandler = require("./handlers/recurring");
+
+// Services
+const { addTransaction, deleteLastTransaction } = require("./services/ledgerService");
+const { addRecurring, processRecurring } = require("./services/recurringService");
+const {
+  getBalances,
+  getIncomeStatement,
+  getNetWorthData,
+  getLast30DayIncomeAndExpenses,
+  getRecurringTransactions
+} = require("./services/reportService");
 
 
 /* =====================================================
@@ -66,19 +73,20 @@ const openai = new OpenAI({
 
 registerWhatIfHandler(bot, db, simulateCashflow);
 registerBalanceHandler(bot, db);
-
-registerReportHandler(bot, db, reportService);
+registerReportHandler(bot, db, {
+  getBalances,
+  getIncomeStatement,
+  getNetWorthData,
+  getLast30DayIncomeAndExpenses,
+  getRecurringTransactions
+});
 registerIncomeHandler(bot, db, reportService);
 registerNetWorthHandler(bot, db, reportService);
 registerSafetyHandler(bot, db, reportService);
-
 registerLedgerHandler(bot, db, ledgerService);
 registerRecurringHandler(bot, db, recurringService);
 
 // (other registerXYZHandler calls will go here later)
-
-
-
 /* ==================================
  * UNDO
  * ================================== */
