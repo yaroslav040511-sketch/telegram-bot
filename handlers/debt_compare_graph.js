@@ -161,7 +161,8 @@ module.exports = function registerDebtCompareGraphHandler(bot, deps) {
               borderWidth: 4,
               tension: 0.25,
               pointRadius: 2,
-              fill: false
+              fill: false,
+              borderDash: [8, 6]
             },
             {
               label: "Avalanche",
