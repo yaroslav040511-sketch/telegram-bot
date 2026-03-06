@@ -90,6 +90,8 @@ Examples:
 or
 bought groceries for 20
 
-Salary 1000 | I got paid 5000 windfall | paid rent 1200
+Salary 1000
+I got paid 5000 windfall
+paid rent 1200
 
 The AI converts these into balanced ledger transactions automatically.
