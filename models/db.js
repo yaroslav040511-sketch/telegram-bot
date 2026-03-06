@@ -4,15 +4,15 @@ const path = require("path");
 const fs = require("fs");
 
 function initDb() {
-  // Ensure /data exists
   const dataDir = path.join(__dirname, "..", "data");
-  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-  // Use your chosen DB location
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
   const dbPath = path.join(dataDir, "ledger.sqlite");
   const db = new Database(dbPath);
 
-  // Tables (single-user, simple)
   db.exec(`
     PRAGMA journal_mode = WAL;
 
@@ -24,16 +24,8 @@ function initDb() {
 
     CREATE TABLE IF NOT EXISTS transactions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      hash TEXT UNIQUE NOT NULL,
       date TEXT NOT NULL,
       description TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS transaction_hashes (
-      transaction_id INTEGER UNIQUE NOT NULL,
-      hash TEXT UNIQUE NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (transaction_id) REFERENCES transactions(id)
     );
 
     CREATE TABLE IF NOT EXISTS postings (
@@ -63,9 +55,16 @@ function initDb() {
       FOREIGN KEY (recurring_id) REFERENCES recurring_transactions(id),
       FOREIGN KEY (transaction_id) REFERENCES transactions(id)
     );
+
+    CREATE TABLE IF NOT EXISTS debts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      balance REAL NOT NULL,
+      apr REAL NOT NULL,
+      minimum REAL NOT NULL
+    );
   `);
 
-  // Seed core accounts
   const insert = db.prepare(`
     INSERT OR IGNORE INTO accounts (name, type)
     VALUES (?, ?)
