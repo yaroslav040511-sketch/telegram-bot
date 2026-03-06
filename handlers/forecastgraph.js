@@ -1,19 +1,16 @@
 // handlers/forecastgraph.js
 const { ChartJSNodeCanvas } = require("chartjs-node-canvas");
 
+function money(n) {
+  const x = Number(n) || 0;
+  return "$" + x.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+}
+
 module.exports = function registerForecastGraphHandler(bot, deps) {
   const { db, simulateCashflow } = deps;
-
-  function money(n) {
-    const x = Number(n) || 0;
-    return "$" + x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-
-  function shorten(s, max = 14) {
-    const t = String(s || "").trim();
-    if (t.length <= max) return t;
-    return t.slice(0, max - 1) + "…";
-  }
 
   bot.onText(/^\/forecastgraph(@\w+)?$/, async (msg) => {
     const chatId = msg.chat.id;
@@ -41,106 +38,64 @@ module.exports = function registerForecastGraphHandler(bot, deps) {
       const labels = ["Today"];
       const balances = [currentBalance];
 
-      // Build a map of date -> labelText from simulation timeline
-      // (timeline items are recurring occurrences)
-      const eventLabelByDate = new Map();
       if (result?.timeline?.length) {
         for (const evt of result.timeline) {
           labels.push(evt.date);
           balances.push(Number(evt.balance) || 0);
-
-          // Only keep the first event label per date (avoid stacking)
-          if (!eventLabelByDate.has(evt.date)) {
-            eventLabelByDate.set(evt.date, shorten(evt.description, 16));
-          }
         }
       }
 
       const minBalance = Math.min(...balances);
       const hasNegative = minBalance < 0;
 
-      // First negative date
       let firstNegativeDate = null;
-      for (let i = 0; i < balances.length; i++) {
-        if (balances[i] < 0) {
-          firstNegativeDate = labels[i];
-          break;
-        }
-      }
-
-      // Upcoming recurring (next 5)
-      const upcoming = db.prepare(`
-        SELECT id, hash, description, postings_json, frequency, next_due_date
-        FROM recurring_transactions
-        ORDER BY date(next_due_date) ASC
-        LIMIT 5
-      `).all();
-
-      const upcomingLines = [];
-      for (const r of upcoming) {
-        let amt = 0;
-        try {
-          const postings = JSON.parse(r.postings_json);
-          const bankLine = Array.isArray(postings)
-            ? postings.find(p => p.account === "assets:bank")
-            : null;
-          if (bankLine) amt = Math.abs(Number(bankLine.amount) || 0);
-        } catch {}
-
-        const shortHash = String(r.hash || "").slice(0, 6);
-        upcomingLines.push(
-          `• ${r.next_due_date}  ${r.description}  ${money(amt)}  (${r.frequency})  #${r.id} ${shortHash}`
-        );
-      }
-
-      // Pick up to 6 dates to label on chart
-      const labelDates = [];
-      for (const d of labels) {
-        if (eventLabelByDate.has(d)) labelDates.push(d);
-        if (labelDates.length >= 6) break;
-      }
-
-      // Custom Chart.js plugin to draw labels on canvas
-      const eventLabelPlugin = {
-        id: "eventLabelPlugin",
-        afterDatasetsDraw(chart) {
-          const { ctx } = chart;
-          const meta = chart.getDatasetMeta(0); // our main line dataset
-          if (!meta || !meta.data) return;
-
-          ctx.save();
-          ctx.font = "18px sans-serif";
-          ctx.fillStyle = "#ffffff";
-
-          // draw labels slightly above points
-          for (let i = 0; i < labels.length; i++) {
-            const date = labels[i];
-            if (!labelDates.includes(date)) continue;
-
-            const point = meta.data[i];
-            if (!point) continue;
-
-            const text = eventLabelByDate.get(date);
-            if (!text) continue;
-
-            const x = point.x;
-            const y = point.y;
-
-            // small shadow so white text is readable
-            ctx.shadowColor = "rgba(0,0,0,0.6)";
-            ctx.shadowBlur = 6;
-
-            // offset label
-            ctx.fillText(text, x + 8, y - 10);
-
-            ctx.shadowBlur = 0;
+      if (result?.timeline?.length) {
+        for (const evt of result.timeline) {
+          const b = Number(evt.balance) || 0;
+          if (b < 0) {
+            firstNegativeDate = evt.date;
+            break;
           }
-
-          ctx.restore();
         }
-      };
+      }
 
-      // --- Chart render (keep your nice styling) ---
+      const recurringLines = [];
+
+      try {
+        const recurring = db.prepare(`
+          SELECT id, hash, description, frequency, next_due_date, postings_json
+          FROM recurring_transactions
+          ORDER BY date(next_due_date) ASC, id ASC
+          LIMIT 10
+        `).all();
+
+        for (const r of recurring) {
+          let amt = null;
+
+          try {
+            const postings = JSON.parse(r.postings_json);
+            if (Array.isArray(postings)) {
+              const bankLine = postings.find((p) => p.account === "assets:bank");
+              if (bankLine) amt = Math.abs(Number(bankLine.amount) || 0);
+            }
+          } catch { }
+
+          const shortHash = String(r.hash || "").slice(0, 6);
+
+          const date = String(r.next_due_date || "").padEnd(12);
+          const desc = String(r.description || "").padEnd(20);
+          const amount = (amt == null ? "" : money(amt)).padStart(12);
+
+          const freq = `(${r.frequency})`;
+          const ref = `#${r.id} ${shortHash}`;
+
+          recurringLines.push(
+            `${date}${desc}${amount}\n` +
+            `             ${freq} ${ref}`
+          );
+        }
+      } catch { }
+
       const width = 1000;
       const height = 600;
 
@@ -169,7 +124,6 @@ module.exports = function registerForecastGraphHandler(bot, deps) {
             }
           ]
         },
-        plugins: [eventLabelPlugin],
         options: {
           responsive: false,
           layout: { padding: 40 },
@@ -210,22 +164,26 @@ module.exports = function registerForecastGraphHandler(bot, deps) {
         contentType: "image/png"
       });
 
-      // --- Summary message ---
-      let summary = "";
-      summary += `Current Balance: ${money(currentBalance)}\n`;
+      let summary = `Current Balance: ${money(currentBalance)}\n`;
       summary += `Projected 30-Day Minimum: ${money(minBalance)}\n`;
-      if (firstNegativeDate) summary += `First negative date: ${firstNegativeDate}\n`;
-      summary += `\n`;
-      summary += hasNegative
-        ? "⚠️ Overdraft risk detected in the next 30 days."
-        : "✅ No overdraft risk in the next 30 days.";
 
-      if (upcomingLines.length) {
-        summary += `\n\n📌 Upcoming recurring (next ${Math.min(upcomingLines.length, 5)}):\n`;
-        summary += upcomingLines.join("\n");
+      if (hasNegative) {
+        summary += `First negative date: ${firstNegativeDate || "(unknown)"}\n\n`;
+        summary += "⚠️ Overdraft risk detected in the next 30 days.";
+      } else {
+        summary += "\n✅ No overdraft risk in the next 30 days.";
       }
 
-      return bot.sendMessage(chatId, summary);
+      if (recurringLines.length) {
+        summary += `\n\n📌 Upcoming recurring (next ${recurringLines.length}):\n`;
+        summary += "```\n";
+        summary += recurringLines.join("\n\n");
+        summary += "\n```";
+      }
+
+      return bot.sendMessage(chatId, summary, {
+        parse_mode: "Markdown"
+      });
     } catch (err) {
       console.error("Forecast graph error:", err);
       return bot.sendMessage(chatId, "Error generating forecast graph.");

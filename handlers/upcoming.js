@@ -2,35 +2,51 @@
 module.exports = function registerUpcomingHandler(bot, deps) {
   const { db } = deps;
 
+  // Local date -> YYYY-MM-DD (NO toISOString)
   function ymd(d) {
-    return d.toISOString().slice(0, 10);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
   }
 
+  // Parse YYYY-MM-DD into a LOCAL date at midday (avoids DST/midnight issues)
   function parseYMD(s) {
-    const d = new Date(s + "T00:00:00");
-    return isNaN(d.getTime()) ? null : d;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || "").trim());
+    if (!m) return null;
+    const y = Number(m[1]);
+    const mo = Number(m[2]) - 1;
+    const d = Number(m[3]);
+    const dt = new Date(y, mo, d, 12, 0, 0, 0); // midday
+    return isNaN(dt.getTime()) ? null : dt;
   }
 
   function nextDueDate(dateObj, frequency) {
     const d = new Date(dateObj);
-    const f = (frequency || "").toLowerCase();
+    d.setHours(12, 0, 0, 0);
 
-    switch (f) {
+    switch ((frequency || "").toLowerCase()) {
       case "daily":
         d.setDate(d.getDate() + 1);
         return d;
+
       case "weekly":
         d.setDate(d.getDate() + 7);
         return d;
+
       case "monthly": {
         const day = d.getDate();
         d.setMonth(d.getMonth() + 1);
-        if (d.getDate() !== day) d.setDate(0); // rollover -> last day prev month
+        if (d.getDate() !== day) d.setDate(0); // rollover
+        d.setHours(12, 0, 0, 0);
         return d;
       }
+
       case "yearly":
         d.setFullYear(d.getFullYear() + 1);
+        d.setHours(12, 0, 0, 0);
         return d;
+
       default:
         return null;
     }
@@ -40,7 +56,7 @@ module.exports = function registerUpcomingHandler(bot, deps) {
     try {
       const postings = JSON.parse(postings_json);
       if (!Array.isArray(postings)) return null;
-      const bank = postings.find(p => p.account === "assets:bank");
+      const bank = postings.find((p) => p.account === "assets:bank");
       if (!bank) return null;
       const amt = Number(bank.amount);
       return Number.isFinite(amt) ? amt : null;
@@ -90,17 +106,25 @@ module.exports = function registerUpcomingHandler(bot, deps) {
       }
 
       if (!Number.isFinite(days) || days < 1 || days > 365) {
-        return bot.sendMessage(chatId, "Usage: /upcoming [bill|income] [days<=365] [limit<=50]\nExample: /upcoming bill 60 25");
+        return bot.sendMessage(
+          chatId,
+          "Usage: /upcoming [bill|income] [days<=365] [limit<=50]\nExample: /upcoming bill 60 25"
+        );
       }
+
       if (!Number.isFinite(limit) || limit < 1 || limit > 50) {
-        return bot.sendMessage(chatId, "Usage: /upcoming [bill|income] [days<=365] [limit<=50]\nExample: /upcoming bill 60 25");
+        return bot.sendMessage(
+          chatId,
+          "Usage: /upcoming [bill|income] [days<=365] [limit<=50]\nExample: /upcoming bill 60 25"
+        );
       }
 
       const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      today.setHours(12, 0, 0, 0);
 
       const end = new Date(today);
       end.setDate(end.getDate() + days);
+      end.setHours(12, 0, 0, 0);
 
       const recurring = db.prepare(`
         SELECT id, hash, description, postings_json, frequency, next_due_date
@@ -115,19 +139,17 @@ module.exports = function registerUpcomingHandler(bot, deps) {
         if (!first) continue;
 
         let due = new Date(first);
-        due.setHours(0, 0, 0, 0);
+        due.setHours(12, 0, 0, 0);
 
         const bankAmt = extractBankAmount(r.postings_json);
         const kind = classifyKind(bankAmt);
         const displayAmt = bankAmt == null ? null : Math.abs(bankAmt);
 
-        // Filter early (still need recurrence expansion, but skip unknown if filtering)
-        if (filter !== "all" && kind !== filter) {
-          // still expand? no need, this recurring will never switch kind
-          continue;
-        }
+        // Filter early: this recurring won't change kind over time
+        if (filter !== "all" && kind !== filter) continue;
 
         let guard = 0;
+
         while (due <= end && guard < 500) {
           if (due >= today) {
             events.push({
@@ -144,7 +166,7 @@ module.exports = function registerUpcomingHandler(bot, deps) {
           const next = nextDueDate(due, r.frequency);
           if (!next) break;
           due = next;
-          due.setHours(0, 0, 0, 0);
+          due.setHours(12, 0, 0, 0);
           guard += 1;
         }
       }
@@ -153,14 +175,19 @@ module.exports = function registerUpcomingHandler(bot, deps) {
 
       if (!events.length) {
         const which =
-          filter === "all" ? "recurring items" : (filter === "bill" ? "bills" : "income items");
+          filter === "all"
+            ? "recurring items"
+            : filter === "bill"
+              ? "bills"
+              : "income items";
+
         return bot.sendMessage(chatId, `No upcoming ${which} in the next ${days} day(s).`);
       }
 
       const shown = events.slice(0, limit);
 
       const headerKind =
-        filter === "all" ? "recurring" : (filter === "bill" ? "bills" : "income");
+        filter === "all" ? "recurring" : filter === "bill" ? "bills" : "income";
 
       let out = `📌 Upcoming ${headerKind} (next ${shown.length} of ${events.length})\n\n`;
 
