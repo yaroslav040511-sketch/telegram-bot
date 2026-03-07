@@ -1,6 +1,19 @@
 # Bot Command Reference
 
-This bot provides personal finance tracking, forecasting, debt planning, and retirement projections via Telegram.
+This bot provides personal finance tracking, forecasting, debt planning
+and retirement projections via Telegram. It uses OpenClaw as a gateway.
+
+This bot also supports both command input and natural language using AI.
+
+Examples:
+
+/add groceries 25
+or
+bought groceries for 25
+
+/deposit 500 paycheck
+or
+I got paid 500
 
 ---
 
@@ -21,7 +34,31 @@ This bot provides personal finance tracking, forecasting, debt planning, and ret
 | `/financial_health` | Financial scorecard | `/financial_health` |
 | `/status` | Financial dashboard summary | `/status` |
 | `/financial_health` | Financial scorecard | `/financial_health` |
-| `/money` | Financial snapshot | `/money` |
+
+---
+
+# Financial Planning
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| '/money' | Financial snapshot | '/money' |
+| '/money_graph' | Graph of bank, debt and networth projection | '/money_graph' |
+| '/future' | Financial projection graph | '/money_graph' |
+| '/milestones' | Key financial milestones | '/milestones' |
+| '/milestones_graph' | Visual timeline of milestones | '/milestones_graph' |
+| '/financial_health' | Overall financial score and diagnostics | 'financial_health' |
+
+---
+
+# Planning Tools
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| 'caniafford' | Check if a purchase is safe | '/caniafford 1500' |
+| '/goal' | Savings goal calculator | '/goal 5000' |
+| '/emergency_fund' | Emergency fund target analysis | '/emergency_fund' |
+| '/retirement' | Retirement Projection | '/retirement' |
+| '/retirement_auto' | Required monthly savings for retirement | '/retirement_auto' |
 
 ---
 
@@ -35,7 +72,6 @@ This bot provides personal finance tracking, forecasting, debt planning, and ret
 | `/upcoming` | Show upcoming recurring events | `/upcoming bill 60 25` |
 | `/year_projection` | 12-month projection using recurring cashflow | `/year_projection` |
 | `/future` | 12-month projection using income, debt and recurring_income | 
-
 
 ---
 
@@ -70,6 +106,14 @@ This bot provides personal finance tracking, forecasting, debt planning, and ret
 | `/burnrate` | Monthly spending vs income and runway | `/burnrate` |
 | `/cashflow` | Recurring monthly income vs bills | `/cashflow` |
 | `/cashflow_detail` | Recurring cashflow breakdown | `/cashflow_detail` |
+
+# Debt Analysis
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| '/debt_compare_range_graph' | Compare snowball vs avalanche | '/debt_compare_range_graph' |
+|                             | across payment ranges         |                             |
+| '/best_extra' | Find the most effective extra payment | '/best_extra 100 500 100' |
 
 ---
 
