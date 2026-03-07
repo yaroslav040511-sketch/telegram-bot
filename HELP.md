@@ -5,15 +5,27 @@ and retirement projections via Telegram. It uses OpenClaw as a gateway.
 
 This bot also supports both command input and natural language using AI.
 
+---
+
 Examples:
 
-/add groceries 25
-or
-bought groceries for 25
+/add groceries 25  
+or  
+bought groceries for 25  
 
-/deposit 500 paycheck
-or
-I got paid 500
+/deposit 500 paycheck  
+or  
+I got paid 500 
+
+---
+
+Quick start:
+
+/money
+/status
+/future
+/milestones
+/rich
 
 ---
 
@@ -32,8 +44,6 @@ I got paid 500
 | `/status` | Financial dashboard summary | `/status` |
 | `/money` | Financial snapshot | `/money` |
 | `/financial_health` | Financial scorecard | `/financial_health` |
-| `/status` | Financial dashboard summary | `/status` |
-| `/financial_health` | Financial scorecard | `/financial_health` |
 
 ---
 
@@ -41,12 +51,11 @@ I got paid 500
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| '/money' | Financial snapshot | '/money' |
-| '/money_graph' | Graph of bank, debt and networth projection | '/money_graph' |
-| '/future' | Financial projection graph | '/money_graph' |
-| '/milestones' | Key financial milestones | '/milestones' |
-| '/milestones_graph' | Visual timeline of milestones | '/milestones_graph' |
-| '/financial_health' | Overall financial score and diagnostics | 'financial_health' |
+| `/money_graph` | Graph of bank, debt and net worth projection | `/money_graph` |
+| `/future` | Financial projection graph | `/future 24` |
+| `/milestones` | Key financial milestones | `/milestones` |
+| `/milestones_graph` | Visual timeline of milestones | `/milestones_graph` |
+| `/rich` | Long-term wealth timeline ($50k → $1M) | `/rich` |
 
 ---
 
@@ -54,11 +63,9 @@ I got paid 500
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| 'caniafford' | Check if a purchase is safe | '/caniafford 1500' |
-| '/goal' | Savings goal calculator | '/goal 5000' |
-| '/emergency_fund' | Emergency fund target analysis | '/emergency_fund' |
-| '/retirement' | Retirement Projection | '/retirement' |
-| '/retirement_auto' | Required monthly savings for retirement | '/retirement_auto' |
+| `/caniafford` | Check if a purchase is safe | `/caniafford 1500` |
+| `/goal` | Savings goal calculator | `/goal 5000` |
+| `/emergency_fund` | Emergency fund target analysis | `/emergency_fund` |
 
 ---
 
@@ -71,7 +78,6 @@ I got paid 500
 | `/whatif` | Simulate balance with a hypothetical spend | `/whatif 50` |
 | `/upcoming` | Show upcoming recurring events | `/upcoming bill 60 25` |
 | `/year_projection` | 12-month projection using recurring cashflow | `/year_projection` |
-| `/future` | 12-month projection using income, debt and recurring_income | 
 
 ---
 
@@ -87,16 +93,6 @@ I got paid 500
 
 ---
 
-# Retirement / FI
-
-| Command | Description | Example |
-|-------|-------------|--------|
-| `/retirement` | Retirement target projection | `/retirement 500 7 1000000` |
-| `/retirement_auto` | Retirement projection using recurring surplus | `/retirement_auto 7 1000000` |
-| `/retirement_fi` | Financial Independence projection using the 4% rule | `/retirement_fi 7` |
-
----
-
 # Monthly Reports
 
 | Command | Description | Example |
@@ -107,13 +103,14 @@ I got paid 500
 | `/cashflow` | Recurring monthly income vs bills | `/cashflow` |
 | `/cashflow_detail` | Recurring cashflow breakdown | `/cashflow_detail` |
 
+---
+
 # Debt Analysis
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| '/debt_compare_range_graph' | Compare snowball vs avalanche | '/debt_compare_range_graph' |
-|                             | across payment ranges         |                             |
-| '/best_extra' | Find the most effective extra payment | '/best_extra 100 500 100' |
+| `/debt_compare_range_graph` | Compare snowball vs avalanche across payment ranges | `/debt_compare_range_graph` |
+| `/best_extra` | Find the most effective extra payment | `/best_extra 100 500 100` |
 
 ---
 
@@ -162,7 +159,6 @@ The bot can interpret plain English messages and convert them into balanced acco
 
 Examples:
 
-```text
 /add groceries 20
 bought groceries for 20
 Salary 1000
