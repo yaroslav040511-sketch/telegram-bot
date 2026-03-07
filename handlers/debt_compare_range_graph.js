@@ -49,6 +49,7 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
     while (activeDebts(debts).length > 0 && months < 1200) {
       months += 1;
 
+      // 1) interest accrual
       for (const d of debts) {
         if (d.balance <= 0.005) continue;
 
@@ -58,6 +59,7 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
         totalInterest += interest;
       }
 
+      // 2) pay minimums
       const remaining = activeDebts(debts);
       sortDebts(remaining, mode);
 
@@ -71,6 +73,7 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
         paymentPool -= minPay;
       }
 
+      // 3) apply extra to target(s)
       let targets = activeDebts(debts);
       sortDebts(targets, mode);
 
@@ -84,6 +87,7 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
         sortDebts(targets, mode);
       }
 
+      // 4) cleanup tiny negative leftovers
       for (const d of debts) {
         if (d.balance < 0.005) d.balance = 0;
       }
@@ -150,8 +154,8 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
         }
 
         const chartJSNodeCanvas = new ChartJSNodeCanvas({
-          width: 1000,
-          height: 600,
+          width: 1100,
+          height: 700,
           backgroundColour: "#0f172a"
         });
 
@@ -163,6 +167,7 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
               {
                 label: "Snowball Interest",
                 data: snowballInterest,
+                yAxisID: "yInterest",
                 borderWidth: 4,
                 tension: 0.25,
                 pointRadius: 4,
@@ -172,10 +177,31 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
               {
                 label: "Avalanche Interest",
                 data: avalancheInterest,
+                yAxisID: "yInterest",
                 borderWidth: 4,
                 tension: 0.25,
                 pointRadius: 4,
                 fill: false
+              },
+              {
+                label: "Snowball Months",
+                data: snowballMonths,
+                yAxisID: "yMonths",
+                borderWidth: 3,
+                tension: 0.2,
+                pointRadius: 3,
+                fill: false,
+                borderDash: [2, 6]
+              },
+              {
+                label: "Avalanche Months",
+                data: avalancheMonths,
+                yAxisID: "yMonths",
+                borderWidth: 3,
+                tension: 0.2,
+                pointRadius: 3,
+                fill: false,
+                borderDash: [12, 4]
               }
             ]
           },
@@ -186,7 +212,18 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
               legend: {
                 labels: {
                   color: "#ffffff",
-                  font: { size: 24 }
+                  font: { size: 22 }
+                }
+              },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => {
+                    const axis = ctx.dataset.yAxisID;
+                    if (axis === "yInterest") {
+                      return `${ctx.dataset.label}: $${Number(ctx.raw).toLocaleString()}`;
+                    }
+                    return `${ctx.dataset.label}: ${ctx.raw} month(s)`;
+                  }
                 }
               }
             },
@@ -206,10 +243,12 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
                   color: "rgba(255,255,255,0.08)"
                 }
               },
-              y: {
+              yInterest: {
+                type: "linear",
+                position: "left",
                 ticks: {
                   color: "#ffffff",
-                  font: { size: 20 },
+                  font: { size: 18 },
                   callback: (value) => "$" + Number(value).toLocaleString()
                 },
                 title: {
@@ -220,6 +259,23 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
                 },
                 grid: {
                   color: "rgba(255,255,255,0.08)"
+                }
+              },
+              yMonths: {
+                type: "linear",
+                position: "right",
+                ticks: {
+                  color: "#ffffff",
+                  font: { size: 18 }
+                },
+                title: {
+                  display: true,
+                  text: "Months to Payoff",
+                  color: "#ffffff",
+                  font: { size: 18 }
+                },
+                grid: {
+                  drawOnChartArea: false
                 }
               }
             }
@@ -232,6 +288,29 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
           filename: "debt_compare_range_graph.png",
           contentType: "image/png"
         });
+
+        // Find the biggest payoff-time improvement between adjacent extra amounts
+        let bestJump = null;
+        for (let i = 1; i < labels.length; i++) {
+          if (
+            snowballMonths[i - 1] != null &&
+            snowballMonths[i] != null &&
+            avalancheMonths[i - 1] != null &&
+            avalancheMonths[i] != null
+          ) {
+            const avgPrev = (snowballMonths[i - 1] + avalancheMonths[i - 1]) / 2;
+            const avgNow = (snowballMonths[i] + avalancheMonths[i]) / 2;
+            const monthsSaved = avgPrev - avgNow;
+
+            if (bestJump == null || monthsSaved > bestJump.monthsSaved) {
+              bestJump = {
+                from: labels[i - 1],
+                to: labels[i],
+                monthsSaved
+              };
+            }
+          }
+        }
 
         let summary = "💳 Debt Compare Range Graph\n\n";
 
@@ -254,6 +333,10 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
                 : "same interest";
 
           summary += `• ${labels[i]}: snowball ${sMon}m/$${sInt.toFixed(0)}, avalanche ${aMon}m/$${aInt.toFixed(0)} → ${better}\n`;
+        }
+
+        if (bestJump && bestJump.monthsSaved > 0) {
+          summary += `\nBiggest payoff-time jump: ${bestJump.from} → ${bestJump.to} saves about ${bestJump.monthsSaved.toFixed(1)} month(s).`;
         }
 
         return bot.sendMessage(chatId, summary);
