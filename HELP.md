@@ -21,11 +21,12 @@ I got paid 500
 
 Quick start:
 
-/money  
-/status  
-/forecastgraph  
-/future  
-/milestones  
+/money
+/status
+/focus
+/forecastgraph
+/future
+/milestones
 /rich
 
 ---
@@ -102,6 +103,7 @@ Quick start:
 | `/goal` | Savings goal calculator | `/goal 5000` |
 | `/emergency_fund` | Emergency fund target analysis | `/emergency_fund` |
 | `/autopilot` | AI financial recommendation engine | `/autopilot` |
+| `/focus` | One-line current financial priority | `/focus` |
 
 ---
 
