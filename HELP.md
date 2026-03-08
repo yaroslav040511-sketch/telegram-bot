@@ -101,6 +101,7 @@ Quick start:
 | `/caniafford` | Check if a purchase is safe | `/caniafford 1500` |
 | `/goal` | Savings goal calculator | `/goal 5000` |
 | `/emergency_fund` | Emergency fund target analysis | `/emergency_fund` |
+| `/autopilot` | AI financial recommendation engine | `/autopilot` |
 
 ---
 
