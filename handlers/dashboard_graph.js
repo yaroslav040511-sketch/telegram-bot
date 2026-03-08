@@ -25,7 +25,40 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
     }));
   }
 
-  function simulateDebtSeries(rows, extra, points) {
+  function getRecurringNetMonthly(recurring) {
+    let income = 0;
+    let bills = 0;
+
+    for (const r of recurring) {
+      try {
+        const postings = JSON.parse(r.postings_json);
+        const bankLine = Array.isArray(postings)
+          ? postings.find((p) => p.account === "assets:bank")
+          : null;
+
+        if (!bankLine) continue;
+
+        let mult = 0;
+        switch ((r.frequency || "").toLowerCase()) {
+          case "daily": mult = 30; break;
+          case "weekly": mult = 4.33; break;
+          case "monthly": mult = 1; break;
+          case "yearly": mult = 1 / 12; break;
+          default: mult = 0;
+        }
+
+        const amt = Number(bankLine.amount) || 0;
+        const monthly = Math.abs(amt) * mult;
+
+        if (amt > 0) income += monthly;
+        if (amt < 0) bills += monthly;
+      } catch { }
+    }
+
+    return income - bills;
+  }
+
+  function simulateDebtSeries(rows, extra, points, daysPerMonth = 30) {
     const debts = rows.map((r) => ({ ...r }));
 
     function sortDebts(arr) {
@@ -50,10 +83,9 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
     }
 
     let dayIndex = 1;
-    let nextMonthDay = 30;
+    let nextMonthDay = daysPerMonth;
 
     while (series.length < points) {
-      // hold daily value until monthly payment day
       if (dayIndex < nextMonthDay) {
         series.push(debts.reduce((sum, d) => sum + d.balance, 0));
         dayIndex += 1;
@@ -97,16 +129,22 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
 
       series.push(debts.reduce((sum, d) => sum + d.balance, 0));
       dayIndex += 1;
-      nextMonthDay += 30;
+      nextMonthDay += daysPerMonth;
     }
 
     return series.slice(0, points);
   }
 
-  bot.onText(/^\/dashboard_graph(@\w+)?$/i, async (msg) => {
+  bot.onText(/^\/dashboard_graph(@\w+)?(?:\s+(\d{1,3}))?$/i, async (msg, match) => {
     const chatId = msg.chat.id;
 
     try {
+      const horizon = match[2] ? Number(match[2]) : 30;
+
+      if (!Number.isInteger(horizon) || horizon < 7 || horizon > 120) {
+        return bot.sendMessage(chatId, "Usage: /dashboard_graph [days]\nExample: /dashboard_graph 60");
+      }
+
       const checking = db.prepare(`
         SELECT id FROM accounts
         WHERE name = 'assets:bank'
@@ -123,11 +161,11 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
       `).get(checking.id);
 
       const currentBalance = Number(balanceRow?.balance) || 0;
-      const result = simulateCashflow(db, currentBalance, checking.id, 30);
+      const result = simulateCashflow(db, currentBalance, checking.id, horizon);
       const timeline = Array.isArray(result.timeline) ? result.timeline : [];
 
       const recurring = db.prepare(`
-        SELECT description, postings_json, next_due_date
+        SELECT description, postings_json, next_due_date, frequency
         FROM recurring_transactions
       `).all();
 
@@ -152,7 +190,6 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
         } catch { }
       }
 
-      // Build daily bank series from today through timeline events
       const labels = ["Today"];
       const bankSeries = [currentBalance];
       const dateToIndex = new Map();
@@ -163,7 +200,6 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
         dateToIndex.set(String(timeline[i].date), i + 1);
       }
 
-      // Lowest-balance marker
       let lowestIdx = 0;
       let lowestBal = currentBalance;
       for (let i = 1; i < bankSeries.length; i++) {
@@ -176,48 +212,19 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
       const lowMarker = bankSeries.map(() => null);
       lowMarker[lowestIdx] = lowestBal;
 
-      // Next income marker
       const incomeMarker = bankSeries.map(() => null);
       if (nextIncome) {
         const idx = dateToIndex.get(nextIncome.date.toISOString().slice(0, 10));
         if (idx != null) incomeMarker[idx] = bankSeries[idx];
       }
 
-      // Debt and net worth series
       const debtRows = getDebtRows();
-      const recurringNetMonthly = (() => {
-        let income = 0;
-        let bills = 0;
-        for (const r of recurring) {
-          try {
-            const postings = JSON.parse(r.postings_json);
-            const bankLine = Array.isArray(postings)
-              ? postings.find((p) => p.account === "assets:bank")
-              : null;
-            if (!bankLine) continue;
-
-            let mult = 0;
-            switch ((r.frequency || "").toLowerCase()) {
-              case "daily": mult = 30; break;
-              case "weekly": mult = 4.33; break;
-              case "monthly": mult = 1; break;
-              case "yearly": mult = 1 / 12; break;
-              default: mult = 0;
-            }
-
-            const amt = Number(bankLine.amount) || 0;
-            const monthly = Math.abs(amt) * mult;
-            if (amt > 0) income += monthly;
-            if (amt < 0) bills += monthly;
-          } catch { }
-        }
-        return income - bills;
-      })();
-
+      const recurringNetMonthly = getRecurringNetMonthly(recurring);
       const debtSeries = simulateDebtSeries(
         debtRows,
         Math.max(0, recurringNetMonthly),
-        bankSeries.length
+        bankSeries.length,
+        30
       );
 
       const netWorthSeries = bankSeries.map((bank, i) => bank - (Number(debtSeries[i]) || 0));
@@ -235,6 +242,11 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
         backgroundColour: "#0f172a"
       });
 
+      const maxTicks =
+        horizon <= 30 ? 12 :
+          horizon <= 60 ? 14 :
+            16;
+
       const configuration = {
         type: "line",
         data: {
@@ -245,7 +257,7 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
               data: bankSeries,
               borderWidth: 4,
               tension: 0.2,
-              pointRadius: 3,
+              pointRadius: horizon <= 45 ? 3 : 2,
               fill: false,
               borderDash: [8, 6]
             },
@@ -254,7 +266,7 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
               data: debtSeries,
               borderWidth: 4,
               tension: 0.2,
-              pointRadius: 2,
+              pointRadius: horizon <= 45 ? 2 : 1,
               fill: false,
               borderDash: [2, 6]
             },
@@ -263,7 +275,7 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
               data: netWorthSeries,
               borderWidth: 4,
               tension: 0.2,
-              pointRadius: 3,
+              pointRadius: horizon <= 45 ? 3 : 2,
               fill: false
             },
             {
@@ -300,7 +312,7 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
               ticks: {
                 color: "#ffffff",
                 font: { size: 16 },
-                maxTicksLimit: 12
+                maxTicksLimit: maxTicks
               },
               grid: {
                 color: "rgba(255,255,255,0.08)"
@@ -334,9 +346,10 @@ module.exports = function registerDashboardGraphHandler(bot, deps) {
 
       const endBalance = bankSeries[bankSeries.length - 1];
       let summary = "📊 Dashboard Graph\n\n";
+      summary += `Horizon: ${horizon} day(s)\n`;
       summary += `Bank Now: ${money(currentBalance)}\n`;
       summary += `Lowest Balance: ${money(lowestBal)}\n`;
-      summary += `End 30 Days: ${money(endBalance)}\n`;
+      summary += `End ${horizon} Days: ${money(endBalance)}\n`;
       if (nextIncome) {
         summary += `Next Income: ${money(nextIncome.amount)} on ${nextIncome.date.toISOString().slice(0, 10)}`;
       }

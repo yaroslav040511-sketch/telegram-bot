@@ -116,6 +116,7 @@ Quick start:
 | `/whatif` | Simulate balance with a hypothetical spend | `/whatif 50` |
 | `/upcoming` | Show upcoming recurring events | `/upcoming bill 60 25` |
 | `/year_projection` | 12-month projection using recurring cashflow | `/year_projection` |
+| `/dashboard_graph` | Visual dashboard of bank, debt and net worth | `/dashboard_graph 60` |
 
 ---
 
