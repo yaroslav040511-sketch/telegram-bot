@@ -27,6 +27,7 @@ Quick start:
 /forecastgraph
 /future
 /milestones
+/next
 /rich
 
 ---
@@ -93,6 +94,7 @@ Quick start:
 | `/dashboard` | Full financial snapshot | `/dashboard` |
 | `/dashboard_graph` | Visual dashboard of bank, debt and net worth | `/dashboard_graph` |
 | `/next` | Single recommended financial action right now | `/next` |
+| `/timeline` | Full money roadmap from now to major milestones | `/timeline` |
 
 ---
 
