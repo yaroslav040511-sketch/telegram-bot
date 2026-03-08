@@ -92,6 +92,7 @@ Quick start:
 | `/today` | Daily money snapshot | `/today` |
 | `/dashboard` | Full financial snapshot | `/dashboard` |
 | `/dashboard_graph` | Visual dashboard of bank, debt and net worth | `/dashboard_graph` |
+| `/next` | Single recommended financial action right now | `/next` |
 
 ---
 

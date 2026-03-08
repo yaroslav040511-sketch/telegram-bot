@@ -102,23 +102,34 @@ module.exports = function registerFocusHandler(bot, deps) {
       const monthlyNet = getRecurringMonthlyNet();
 
       let focus;
+      let tip;
 
       if (lowest < 0) {
         focus = "Protect cash immediately and avoid overdraft.";
+        tip = "Pause extra debt payments and delay discretionary spending.";
       } else if (lowest < 100) {
         focus = "Protect cash until payday.";
+        tip = "Keep spending minimal until your next income lands.";
       } else if (totalDebt > 0 && monthlyNet > 0 && targetDebt) {
         focus = `Attack ${targetDebt.name} first (${targetDebt.apr}% APR).`;
+        tip = "Every extra dollar paid toward high APR debt reduces future interest.";
       } else if (savings < 1000) {
         focus = "Build emergency savings to $1,000.";
+        tip = "A small cash buffer protects you from unexpected expenses.";
       } else if (monthlyNet > 0) {
         focus = "Keep growing wealth with your monthly surplus.";
+        tip = "Consistency matters more than timing when building wealth.";
       } else {
         focus = "Stabilize cashflow before making bigger moves.";
+        tip = "Review recurring expenses and reduce unnecessary spending.";
       }
 
       let out = "🎯 Focus\n\n";
       out += focus;
+
+      if (tip) {
+        out += `\n\nTip: ${tip}`;
+      }
 
       if (targetDebt && totalDebt > 0 && lowest >= 100) {
         out += `\n\nTop debt target: ${targetDebt.name} • ${money(targetDebt.balance)} • ${targetDebt.apr}% APR`;
