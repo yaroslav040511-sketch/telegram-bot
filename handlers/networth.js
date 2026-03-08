@@ -1,33 +1,63 @@
-module.exports = function registerNetWorthHandler(bot, deps) {
-  const { ledgerService } = deps;
+// handlers/buckets.js
+module.exports = function registerBucketsHandler(bot, deps) {
+  const { ledgerService, db } = deps;
 
-  bot.onText(/^\/networth(@\w+)?$/, (msg) => {
+  function money(n) {
+    return `$${(Number(n) || 0).toFixed(2)}`;
+  }
+
+  bot.onText(/^\/networth(@\w+)?$/i, (msg) => {
     const chatId = msg.chat.id;
 
     try {
       const balances = ledgerService.getBalances();
 
-      let assets = 0;
-      let liabilities = 0;
+      let cash = 0;
+      let savings = 0;
+      let otherAssets = 0;
+      let liabilitiesFromLedger = 0;
 
-      for (const b of balances) {
-        const amt = Number(b.balance) || 0;
-        if (String(b.account).startsWith("assets:")) assets += amt;
-        if (String(b.account).startsWith("liabilities:")) liabilities += amt;
+      for (const a of balances) {
+        const acct = String(a.account || "");
+        const bal = Number(a.balance) || 0;
+
+        if (acct === "assets:bank") {
+          cash += bal;
+        } else if (acct.startsWith("assets:")) {
+          savings += bal;
+          otherAssets += bal;
+        } else if (acct.startsWith("liabilities:")) {
+          liabilitiesFromLedger += Math.abs(bal);
+        }
       }
 
-      const netWorth = assets - liabilities;
+      const debtRow = db.prepare(`
+        SELECT IFNULL(SUM(balance), 0) as totalDebt
+        FROM debts
+      `).get();
 
-      const out =
-        `🏛️ Net Worth\n\n` +
-        `Assets: $${assets.toFixed(2)}\n` +
-        `Liabilities: $${liabilities.toFixed(2)}\n\n` +
-        `Net Worth: $${netWorth.toFixed(2)}`;
+      const debtTableTotal = Number(debtRow?.totalDebt) || 0;
 
-      return bot.sendMessage(chatId, out);
+      // Prefer explicit debts table if present, otherwise fallback to ledger liabilities
+      const debt = debtTableTotal > 0 ? debtTableTotal : liabilitiesFromLedger;
+
+      const totalAssets = cash + otherAssets;
+      const netWorth = totalAssets - debt;
+
+      let out = "🪣 Buckets\n\n";
+      out += "```\n";
+      out += `Cash:        ${money(cash)}\n`;
+      out += `Savings:     ${money(savings)}\n`;
+      out += `Debt:        ${money(debt)}\n`;
+      out += `Net Worth:   ${netWorth >= 0 ? "+" : "-"}${money(Math.abs(netWorth))}\n`;
+      out += "```";
+
+      return bot.sendMessage(chatId, out, {
+        parse_mode: "Markdown"
+      });
     } catch (err) {
-      console.error("Networth error:", err);
-      return bot.sendMessage(chatId, "Net worth error.");
+      console.error("buckets error:", err);
+      return bot.sendMessage(chatId, "Error generating buckets summary.");
     }
   });
 };

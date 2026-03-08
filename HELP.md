@@ -37,6 +37,8 @@ Quick start:
 | `/deposit` | Add money to bank | `/deposit 500 paycheck` |
 | `/withdraw` | Remove money from bank | `/withdraw 50 cash` |
 | `/balance` | Show bank balance | `/balance` |
+| `/savings` | Save money to savings | `/savings 50` |
+| `/savings` | Show bank savings balance | `/savings' |
 | `/accounts` | List account balances | `/accounts` |
 | `/networth` | Show assets minus liabilities | `/networth` |
 | `/history` | Show recent transactions | `/history` |
