@@ -89,6 +89,8 @@ Quick start:
 | `/buckets` | Snapshot of cash, savings, debt and net worth | `/buckets` |
 | `/dashboard` | Full financial snapshot | `/dashboard` |
 | `/today` | Daily money snapshot | `/today` |
+| `/dashboard` | Full financial snapshot | `/dashboard` |
+| `/dashboard_graph` | Visual dashboard of bank, debt and net worth | `/dashboard_graph` |
 
 ---
 
