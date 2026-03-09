@@ -1,27 +1,8 @@
 // handlers/emergency_fund.js
 module.exports = function registerEmergencyFundHandler(bot, deps) {
-  const { db, ledgerService } = deps;
-
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
-  }
-
-  function monthlyMultiplier(freq) {
-    switch ((freq || "").toLowerCase()) {
-      case "daily": return 30;
-      case "weekly": return 4.33;
-      case "monthly": return 1;
-      case "yearly": return 1 / 12;
-      default: return 0;
-    }
-  }
-
-  function futureMonthLabel(monthsAhead) {
-    const d = new Date();
-    d.setDate(1);
-    d.setMonth(d.getMonth() + monthsAhead);
-    return d.toLocaleString("en-US", { month: "long", year: "numeric" });
-  }
+  const { db, ledgerService, format, finance } = deps;
+  const { formatMoney, codeBlock } = format;
+  const { futureMonthLabel, getRecurringMonthlyNet } = finance;
 
   function getBankBalance() {
     const balances = ledgerService.getBalances();
@@ -42,51 +23,66 @@ module.exports = function registerEmergencyFundHandler(bot, deps) {
     return Math.abs(Number(row?.total) || 0);
   }
 
-  function getRecurringMonthlyNet() {
-    const rows = db.prepare(`
-      SELECT postings_json, frequency
-      FROM recurring_transactions
-    `).all();
-
-    let income = 0;
-    let bills = 0;
-
-    for (const r of rows) {
-      try {
-        const postings = JSON.parse(r.postings_json);
-        const bankLine = Array.isArray(postings)
-          ? postings.find((p) => p.account === "assets:bank")
-          : null;
-
-        if (!bankLine) continue;
-
-        const amt = Number(bankLine.amount) || 0;
-        const monthly = Math.abs(amt) * monthlyMultiplier(r.frequency);
-
-        if (amt > 0) income += monthly;
-        if (amt < 0) bills += monthly;
-      } catch { }
-    }
-
-    return income - bills;
+  function renderHelp() {
+    return [
+      "*\\/emergency_fund*",
+      "Emergency fund target analysis.",
+      "",
+      "*Usage*",
+      "- `/emergency_fund`",
+      "- `/emergency_fund <months>`",
+      "",
+      "*Arguments*",
+      "- `<months>` — Optional target size in months of expenses. Defaults to `3`. Range: `1` to `24`.",
+      "",
+      "*Examples*",
+      "- `/emergency_fund`",
+      "- `/emergency_fund 6`",
+      "",
+      "*Notes*",
+      "- Uses current month expenses to estimate the target.",
+      "- Uses recurring monthly surplus to estimate time to goal."
+    ].join("\n");
   }
 
-  bot.onText(/^\/emergency_fund(@\w+)?(?:\s+(\d{1,2}))?$/i, (msg, match) => {
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/emergency_fund(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw && /^(help|--help|-h)$/i.test(raw)) {
+      return sendHelp(chatId);
+    }
 
     try {
-      const monthsTarget = match[2] ? Number(match[2]) : 3;
+      const monthsTarget = raw ? Number(raw) : 3;
 
       if (!Number.isInteger(monthsTarget) || monthsTarget < 1 || monthsTarget > 24) {
-        return bot.sendMessage(chatId, "Usage: /emergency_fund [months]\nExample: /emergency_fund 6");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Usage: `/emergency_fund [months]`",
+            "Example: `/emergency_fund 6`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
       const cash = getBankBalance();
       const monthlyExpenses = getMonthlyExpenses();
-      const recurringNet = getRecurringMonthlyNet();
+      const recurring = getRecurringMonthlyNet(db);
+      const recurringNet = recurring.net;
 
       if (monthlyExpenses <= 0) {
-        return bot.sendMessage(chatId, "This month's expenses are zero or unavailable, so emergency fund target cannot be calculated.");
+        return bot.sendMessage(
+          chatId,
+          "This month's expenses are zero or unavailable, so emergency fund target cannot be calculated."
+        );
       }
 
       const target = monthlyExpenses * monthsTarget;
@@ -110,18 +106,21 @@ module.exports = function registerEmergencyFundHandler(bot, deps) {
         etaText = `${monthsToGoal} month(s) (${futureMonthLabel(monthsToGoal)})`;
       }
 
-      let out = "🛟 Emergency Fund\n\n";
-      out += "```\n";
-      out += `Cash on Hand:      ${money(cash)}\n`;
-      out += `Monthly Expenses:  ${money(monthlyExpenses)}\n`;
-      out += `Target Months:     ${monthsTarget}\n`;
-      out += `Target Fund:       ${money(target)}\n`;
-      out += `Recurring Surplus: ${recurringNet >= 0 ? "+" : "-"}${money(Math.abs(recurringNet))}\n`;
-      out += `Funded:            ${fundedPct.toFixed(0)}%\n`;
-      out += `Gap:               ${gap > 0 ? money(gap) : money(0)}\n`;
-      out += `ETA:               ${etaText}\n`;
-      out += "```";
-      out += `\n${statusText}`;
+      const out = [
+        "🛟 *Emergency Fund*",
+        "",
+        codeBlock([
+          `Cash on Hand      ${formatMoney(cash)}`,
+          `Monthly Expenses  ${formatMoney(monthlyExpenses)}`,
+          `Target Months     ${monthsTarget}`,
+          `Target Fund       ${formatMoney(target)}`,
+          `Recurring Surplus ${recurringNet >= 0 ? "+" : "-"}${formatMoney(Math.abs(recurringNet))}`,
+          `Funded            ${fundedPct.toFixed(0)}%`,
+          `Gap               ${gap > 0 ? formatMoney(gap) : formatMoney(0)}`,
+          `ETA               ${etaText}`
+        ].join("\n")),
+        statusText
+      ].join("\n");
 
       return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
@@ -131,4 +130,25 @@ module.exports = function registerEmergencyFundHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error calculating emergency fund.");
     }
   });
+};
+
+module.exports.help = {
+  command: "emergency_fund",
+  category: "General",
+  summary: "Emergency fund target analysis.",
+  usage: [
+    "/emergency_fund",
+    "/emergency_fund <months>"
+  ],
+  args: [
+    { name: "<months>", description: "Optional target size in months of expenses. Defaults to 3." }
+  ],
+  examples: [
+    "/emergency_fund",
+    "/emergency_fund 6"
+  ],
+  notes: [
+    "Uses current month expenses to estimate the target.",
+    "Uses recurring monthly surplus to estimate time to goal."
+  ]
 };

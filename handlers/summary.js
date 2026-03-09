@@ -1,13 +1,47 @@
 // handlers/summary.js
 module.exports = function registerSummaryHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format } = deps;
+  const { formatMoney, renderTable } = format;
 
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
+  function renderHelp() {
+    return [
+      "*\\/summary*",
+      "30-day spending breakdown by category.",
+      "",
+      "*Usage*",
+      "- `/summary`",
+      "",
+      "*Examples*",
+      "- `/summary`"
+    ].join("\n");
   }
 
-  bot.onText(/^\/summary(@\w+)?$/, (msg) => {
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/summary(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return sendHelp(chatId);
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/summary` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/summary`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
       const rows = db.prepare(`
@@ -23,35 +57,50 @@ module.exports = function registerSummaryHandler(bot, deps) {
       `).all();
 
       if (!rows.length) {
-        return bot.sendMessage(chatId,
-          "📊 30-Day Spending Summary\n\nNo expenses recorded."
-        );
+        return bot.sendMessage(chatId, "📊 30-Day Spending Summary\n\nNo expenses recorded.");
       }
 
       let total = 0;
-
-      let out = "📊 30-Day Spending Summary\n\n";
-      out += "```\n";
+      const tableRows = [];
 
       for (const r of rows) {
         const amt = Math.abs(Number(r.total) || 0);
         total += amt;
 
-        const name = r.account.replace("expenses:", "");
-        out += `${name.padEnd(14)} ${money(amt)}\n`;
+        const name = String(r.account || "").replace("expenses:", "");
+        tableRows.push([name, formatMoney(amt)]);
       }
 
-      out += "---------------------\n";
-      out += `Total          ${money(total)}\n`;
-      out += "```";
+      tableRows.push(["Total", formatMoney(total)]);
+
+      const out = [
+        "📊 *30-Day Spending Summary*",
+        "",
+        renderTable(
+          ["Category", "Amount"],
+          tableRows,
+          { aligns: ["left", "right"] }
+        )
+      ].join("\n");
 
       return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
       });
-
     } catch (err) {
       console.error("summary error:", err);
       return bot.sendMessage(chatId, "Error generating summary.");
     }
   });
+};
+
+module.exports.help = {
+  command: "summary",
+  category: "General",
+  summary: "30-day spending breakdown by category.",
+  usage: [
+    "/summary"
+  ],
+  examples: [
+    "/summary"
+  ]
 };

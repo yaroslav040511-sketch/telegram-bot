@@ -1,13 +1,15 @@
 // handlers/cashflow_detail.js
 module.exports = function registerCashflowDetailHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format, finance } = deps;
+  const { formatMoney, codeBlock } = format;
+  const { monthlyMultiplier } = finance;
 
   function extractBankAmount(postings_json) {
     try {
       const postings = JSON.parse(postings_json);
       if (!Array.isArray(postings)) return null;
 
-      const bank = postings.find(p => p.account === "assets:bank");
+      const bank = postings.find((p) => p.account === "assets:bank");
       if (!bank) return null;
 
       const amt = Number(bank.amount);
@@ -17,23 +19,43 @@ module.exports = function registerCashflowDetailHandler(bot, deps) {
     }
   }
 
-  function monthlyMultiplier(freq) {
-    switch ((freq || "").toLowerCase()) {
-      case "daily":
-        return 30;
-      case "weekly":
-        return 4.33;
-      case "monthly":
-        return 1;
-      case "yearly":
-        return 1 / 12;
-      default:
-        return 0;
-    }
+  function renderHelp() {
+    return [
+      "*\\/cashflow_detail*",
+      "Show a recurring cashflow breakdown by bill and income line item.",
+      "",
+      "*Usage*",
+      "- `/cashflow_detail`",
+      "",
+      "*Examples*",
+      "- `/cashflow_detail`"
+    ].join("\n");
   }
 
-  bot.onText(/^\/cashflow_detail(@\w+)?$/i, (msg) => {
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), { parse_mode: "Markdown" });
+  }
+
+  bot.onText(/^\/cashflow_detail(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return sendHelp(chatId);
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/cashflow_detail` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/cashflow_detail`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
       const rows = db.prepare(`
@@ -42,11 +64,12 @@ module.exports = function registerCashflowDetailHandler(bot, deps) {
         ORDER BY id ASC
       `).all();
 
-      if (!rows.length) return bot.sendMessage(chatId, "No recurring items saved.");
+      if (!rows.length) {
+        return bot.sendMessage(chatId, "No recurring items saved.");
+      }
 
       let income = 0;
       let bills = 0;
-
       const lines = [];
 
       for (const r of rows) {
@@ -56,10 +79,7 @@ module.exports = function registerCashflowDetailHandler(bot, deps) {
         const bankAmt = extractBankAmount(r.postings_json);
         if (bankAmt == null) continue;
 
-        // bankAmt positive => income into bank
-        // bankAmt negative => bill out of bank
         const monthly = bankAmt * mult;
-
         const kind = monthly >= 0 ? "income" : "bill";
         const absMonthly = Math.abs(monthly);
 
@@ -78,35 +98,55 @@ module.exports = function registerCashflowDetailHandler(bot, deps) {
       }
 
       const net = income - bills;
+      const billsLines = lines.filter((l) => l.kind === "bill");
+      const incomeLines = lines.filter((l) => l.kind === "income");
 
-      let out = "🧾 Monthly Cashflow Detail (Recurring)\n\n";
-      out += `Income: $${income.toFixed(2)}\n`;
-      out += `Bills:  $${bills.toFixed(2)}\n`;
-      out += `Net:    ${net >= 0 ? "+" : "-"}$${Math.abs(net).toFixed(2)}\n\n`;
-
-      // Bills first, then income (usually easiest to read)
-      const billsLines = lines.filter(l => l.kind === "bill");
-      const incomeLines = lines.filter(l => l.kind === "income");
+      let out = [
+        "🧾 *Monthly Cashflow Detail (Recurring)*",
+        "",
+        codeBlock([
+          `Income  ${formatMoney(income)}`,
+          `Bills   ${formatMoney(bills)}`,
+          `Net     ${net >= 0 ? "+" : "-"}${formatMoney(Math.abs(net))}`
+        ].join("\n"))
+      ].join("\n");
 
       if (billsLines.length) {
-        out += "Bills:\n";
-        for (const l of billsLines) {
-          out += `- $${l.monthly.toFixed(2)}  ${l.description}  (${l.frequency}) next:${l.next}  #${l.id} ${l.ref}\n`;
-        }
-        out += "\n";
+        out += "\n\nBills:\n";
+        out += codeBlock(
+          billsLines.map((l) =>
+            `- ${formatMoney(l.monthly)}  ${l.description}  (${l.frequency}) next:${l.next}  #${l.id} ${l.ref}`
+          ).join("\n")
+        );
       }
 
       if (incomeLines.length) {
-        out += "Income:\n";
-        for (const l of incomeLines) {
-          out += `+ $${l.monthly.toFixed(2)}  ${l.description}  (${l.frequency}) next:${l.next}  #${l.id} ${l.ref}\n`;
-        }
+        out += "\n\nIncome:\n";
+        out += codeBlock(
+          incomeLines.map((l) =>
+            `+ ${formatMoney(l.monthly)}  ${l.description}  (${l.frequency}) next:${l.next}  #${l.id} ${l.ref}`
+          ).join("\n")
+        );
       }
 
-      return bot.sendMessage(chatId, out);
+      return bot.sendMessage(chatId, out, {
+        parse_mode: "Markdown"
+      });
     } catch (err) {
       console.error("Cashflow detail error:", err);
       return bot.sendMessage(chatId, "Error generating cashflow detail.");
     }
   });
+};
+
+module.exports.help = {
+  command: "cashflow_detail",
+  category: "General",
+  summary: "Recurring cashflow breakdown.",
+  usage: [
+    "/cashflow_detail"
+  ],
+  examples: [
+    "/cashflow_detail"
+  ]
 };

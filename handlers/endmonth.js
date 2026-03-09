@@ -1,13 +1,47 @@
 // handlers/endmonth.js
 module.exports = function registerEndMonthHandler(bot, deps) {
-  const { db, simulateCashflow } = deps;
+  const { db, simulateCashflow, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
+  function renderHelp() {
+    return [
+      "*\\/endmonth*",
+      "Project balance after the next 30 days of recurring income and bills.",
+      "",
+      "*Usage*",
+      "- `/endmonth`",
+      "",
+      "*Examples*",
+      "- `/endmonth`"
+    ].join("\n");
   }
 
-  bot.onText(/^\/endmonth(@\w+)?$/i, (msg) => {
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/endmonth(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return sendHelp(chatId);
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/endmonth` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/endmonth`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
       const checking = db.prepare(`
@@ -32,25 +66,28 @@ module.exports = function registerEndMonthHandler(bot, deps) {
       let recurringIncome = 0;
       let recurringBills = 0;
 
-      for (const event of result.timeline) {
+      for (const event of result.timeline || []) {
         const amt = Number(event.amount) || 0;
         if (amt > 0) recurringIncome += amt;
         if (amt < 0) recurringBills += Math.abs(amt);
       }
 
       const endingBalance =
-        result.timeline.length > 0
+        Array.isArray(result.timeline) && result.timeline.length > 0
           ? Number(result.timeline[result.timeline.length - 1].balance) || currentBalance
           : currentBalance;
 
-      let out = "📅 End of Month\n\n";
-      out += "```\n";
-      out += `Current Balance:   ${money(currentBalance)}\n`;
-      out += `Recurring Income:  ${money(recurringIncome)}\n`;
-      out += `Recurring Bills:   ${money(recurringBills)}\n`;
-      out += `Ending Balance:    ${money(endingBalance)}\n`;
-      out += `Lowest Balance:    ${money(result.lowestBalance)}\n`;
-      out += "```";
+      const out = [
+        "📅 *End of Month*",
+        "",
+        codeBlock([
+          `Current Balance   ${formatMoney(currentBalance)}`,
+          `Recurring Income  ${formatMoney(recurringIncome)}`,
+          `Recurring Bills   ${formatMoney(recurringBills)}`,
+          `Ending Balance    ${formatMoney(endingBalance)}`,
+          `Lowest Balance    ${formatMoney(result.lowestBalance)}`
+        ].join("\n"))
+      ].join("\n");
 
       return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
@@ -60,4 +97,16 @@ module.exports = function registerEndMonthHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error generating end-of-month summary.");
     }
   });
+};
+
+module.exports.help = {
+  command: "endmonth",
+  category: "General",
+  summary: "Project balance after the next 30 days of recurring income and bills.",
+  usage: [
+    "/endmonth"
+  ],
+  examples: [
+    "/endmonth"
+  ]
 };

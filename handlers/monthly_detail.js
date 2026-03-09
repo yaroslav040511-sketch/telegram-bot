@@ -1,9 +1,47 @@
 // handlers/monthly_detail.js
 module.exports = function registerMonthlyDetailHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format } = deps;
+  const { formatMoney, renderTable } = format;
 
-  bot.onText(/^\/monthly_detail(@\w+)?$/, (msg) => {
+  function renderHelp() {
+    return [
+      "*\\/monthly_detail*",
+      "Income vs expense breakdown.",
+      "",
+      "*Usage*",
+      "- `/monthly_detail`",
+      "",
+      "*Examples*",
+      "- `/monthly_detail`"
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/monthly_detail(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return sendHelp(chatId);
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/monthly_detail` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/monthly_detail`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
       const rows = db.prepare(`
@@ -33,65 +71,81 @@ module.exports = function registerMonthlyDetailHandler(bot, deps) {
         const amount = Math.abs(Number(r.total) || 0);
 
         if (r.type === "INCOME") {
-          incomeRows.push({ account: r.account, amount });
+          incomeRows.push([r.account, formatMoney(amount)]);
           incomeTotal += amount;
         }
 
         if (r.type === "EXPENSES") {
-          expenseRows.push({ account: r.account, amount });
+          const pct = expenseTotal > 0
+            ? "0%"
+            : null;
+          expenseRows.push({
+            account: r.account,
+            amount
+          });
           expenseTotal += amount;
         }
       }
 
+      const expenseTableRows = expenseRows.map((r) => {
+        const pct = expenseTotal > 0
+          ? `${((r.amount / expenseTotal) * 100).toFixed(0)}%`
+          : "0%";
+
+        return [r.account, formatMoney(r.amount), pct];
+      });
+
       const net = incomeTotal - expenseTotal;
 
-      function line(account, amount, sign = " ") {
-        const name = String(account).padEnd(24);
-        const amt = (`$${amount.toFixed(2)}`).padStart(12);
-        return `${sign} ${name}${amt}`;
-      }
-
-      let out = "📊 Monthly Detail\n\n";
-      out += "```\n";
+      let out = "📊 *Monthly Detail*";
 
       if (incomeRows.length) {
-        out += "INCOME\n";
-        out += "-----------------------------\n";
-        for (const r of incomeRows) {
-          out += line(r.account, r.amount, "+") + "\n";
-        }
-        out += "\n";
+        out += "\n\nIncome\n";
+        out += renderTable(
+          ["Account", "Amount"],
+          incomeRows,
+          { aligns: ["left", "right"] }
+        );
       }
 
-      if (expenseRows.length) {
-        out += "EXPENSES\n";
-        out += "-----------------------------\n";
-        for (const r of expenseRows) {
-          const pct = expenseTotal > 0
-            ? ((r.amount / expenseTotal) * 100).toFixed(0)
-            : "0";
-
-          const base = line(r.account, r.amount, "-");
-          out += `${base}   ${pct}%\n`;
-        }
-        out += "\n";
+      if (expenseTableRows.length) {
+        out += "\n\nExpenses\n";
+        out += renderTable(
+          ["Account", "Amount", "%"],
+          expenseTableRows,
+          { aligns: ["left", "right", "right"] }
+        );
       }
 
-      out += "TOTALS\n";
-      out += "-----------------------------\n";
-      out += line("Income", incomeTotal, "+") + "\n";
-      out += line("Expenses", expenseTotal, "-") + "\n";
-      out += line("Net", Math.abs(net), net >= 0 ? "+" : "-") + "\n";
-
-      out += "```";
+      out += "\n\nTotals\n";
+      out += renderTable(
+        ["Type", "Amount"],
+        [
+          ["Income", formatMoney(incomeTotal)],
+          ["Expenses", formatMoney(expenseTotal)],
+          ["Net", `${net >= 0 ? "+" : "-"}${formatMoney(Math.abs(net))}`]
+        ],
+        { aligns: ["left", "right"] }
+      );
 
       return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
       });
-
     } catch (err) {
       console.error("Monthly detail error:", err);
       return bot.sendMessage(chatId, "Error calculating monthly detail.");
     }
   });
+};
+
+module.exports.help = {
+  command: "monthly_detail",
+  category: "General",
+  summary: "Income vs expense breakdown.",
+  usage: [
+    "/monthly_detail"
+  ],
+  examples: [
+    "/monthly_detail"
+  ]
 };

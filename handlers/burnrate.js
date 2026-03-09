@@ -1,17 +1,51 @@
 // handlers/burnrate.js
 module.exports = function registerBurnrateHandler(bot, deps) {
-  const { db, ledgerService } = deps;
+  const { db, ledgerService, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
-  bot.onText(/^\/burnrate(@\w+)?$/, (msg) => {
+  function renderHelp() {
+    return [
+      "*\\/burnrate*",
+      "Show monthly spending versus income and estimated runway.",
+      "",
+      "*Usage*",
+      "- `/burnrate`",
+      "",
+      "*Examples*",
+      "- `/burnrate`"
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), { parse_mode: "Markdown" });
+  }
+
+  bot.onText(/^\/burnrate(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return sendHelp(chatId);
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/burnrate` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/burnrate`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
-      // Current bank balance
       const balances = ledgerService.getBalances();
       const bank = balances.find((b) => b.account === "assets:bank");
       const bankBalance = Number(bank?.balance) || 0;
 
-      // This month's income / expenses from posted ledger transactions
       const rows = db.prepare(`
         SELECT
           a.type as type,
@@ -44,23 +78,21 @@ module.exports = function registerBurnrateHandler(bot, deps) {
         runwayText = `${months.toFixed(1)} months (${Math.floor(days)} days)`;
       }
 
-      let out = "🔥 Burn Rate\n\n";
-      out += `Bank Balance:      $${bankBalance.toFixed(2)}\n`;
-      out += `Monthly Income:    $${income.toFixed(2)}\n`;
-      out += `Monthly Expenses:  $${expenses.toFixed(2)}\n`;
-      out += `Net Monthly:       $${netMonthly.toFixed(2)}\n`;
+      const out = [
+        "🔥 *Burn Rate*",
+        "",
+        codeBlock([
+          `Bank Balance      ${formatMoney(bankBalance)}`,
+          `Monthly Income    ${formatMoney(income)}`,
+          `Monthly Expenses  ${formatMoney(expenses)}`,
+          `Net Monthly       ${netMonthly >= 0 ? "+" : "-"}${formatMoney(Math.abs(netMonthly))}`,
+          `Burn / Month      ${formatMoney(burnMonthly)}`,
+          `Burn / Day        ${formatMoney(burnDaily)}`,
+          `Runway            ${runwayText}`
+        ].join("\n"))
+      ].join("\n");
 
-      if (burnMonthly > 0) {
-        out += `Burn / Month:      $${burnMonthly.toFixed(2)}\n`;
-        out += `Burn / Day:        $${burnDaily.toFixed(2)}\n`;
-      } else {
-        out += `Burn / Month:      $0.00\n`;
-        out += `Burn / Day:        $0.00\n`;
-      }
-
-      out += `Runway:            ${runwayText}`;
-
-      return bot.sendMessage(chatId, "```\n" + out + "\n```", {
+      return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
       });
     } catch (err) {
@@ -68,4 +100,16 @@ module.exports = function registerBurnrateHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error calculating burn rate.");
     }
   });
+};
+
+module.exports.help = {
+  command: "burnrate",
+  category: "General",
+  summary: "Monthly spending vs income and runway.",
+  usage: [
+    "/burnrate"
+  ],
+  examples: [
+    "/burnrate"
+  ]
 };

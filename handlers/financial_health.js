@@ -1,10 +1,8 @@
-// handlers/financial_health.js
+i// handlers/financial_health.js
 module.exports = function registerFinancialHealthHandler(bot, deps) {
-  const { db, ledgerService } = deps;
-
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
-  }
+  const { db, ledgerService, format, finance } = deps;
+  const { formatMoney, codeBlock } = format;
+  const { getRecurringMonthlyNet } = finance;
 
   function label(score) {
     if (score >= 85) return "Excellent";
@@ -14,12 +12,49 @@ module.exports = function registerFinancialHealthHandler(bot, deps) {
     return "Critical";
   }
 
-  bot.onText(/^\/financial_health(@\w+)?$/i, (msg) => {
+  function renderHelp() {
+    return [
+      "*\\/financial_health*",
+      "Show a financial scorecard based on cash, net worth, monthly cashflow, recurring cashflow, runway, debt, and weighted APR.",
+      "",
+      "*Usage*",
+      "- `/financial_health`",
+      "",
+      "*Examples*",
+      "- `/financial_health`",
+      "",
+      "*Notes*",
+      "- Score ranges from 0 to 100.",
+      "- Uses current month posted income and expenses plus recurring cashflow."
+    ].join("\n");
+  }
 
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), { parse_mode: "Markdown" });
+  }
+
+  bot.onText(/^\/financial_health(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return sendHelp(chatId);
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/financial_health` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/financial_health`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
-
       const balances = ledgerService.getBalances();
 
       let bankBalance = 0;
@@ -30,12 +65,10 @@ module.exports = function registerFinancialHealthHandler(bot, deps) {
         const amt = Number(b.balance) || 0;
 
         if (b.account === "assets:bank") bankBalance = amt;
-
-        if (b.account.startsWith("assets:"))
-          totalAssets += amt;
-
-        if (b.account.startsWith("liabilities:"))
+        if (String(b.account).startsWith("assets:")) totalAssets += amt;
+        if (String(b.account).startsWith("liabilities:")) {
           totalLiabilities += Math.abs(amt);
+        }
       }
 
       const netWorth = totalAssets - totalLiabilities;
@@ -57,51 +90,14 @@ module.exports = function registerFinancialHealthHandler(bot, deps) {
 
       for (const r of rows) {
         const v = Math.abs(Number(r.total) || 0);
-
         if (r.type === "INCOME") income = v;
         if (r.type === "EXPENSES") expenses = v;
       }
 
       const netMonthly = income - expenses;
 
-      const recurringRows = db.prepare(`
-        SELECT postings_json, frequency
-        FROM recurring_transactions
-      `).all();
-
-      function monthlyMultiplier(freq) {
-        switch ((freq || "").toLowerCase()) {
-          case "daily": return 30;
-          case "weekly": return 4.33;
-          case "monthly": return 1;
-          case "yearly": return 1 / 12;
-          default: return 0;
-        }
-      }
-
-      let recurringIncome = 0;
-      let recurringBills = 0;
-
-      for (const r of recurringRows) {
-        try {
-
-          const postings = JSON.parse(r.postings_json);
-
-          const bankLine = postings.find(p => p.account === "assets:bank");
-
-          if (!bankLine) continue;
-
-          const amt = Number(bankLine.amount) || 0;
-
-          const monthly = Math.abs(amt) * monthlyMultiplier(r.frequency);
-
-          if (amt > 0) recurringIncome += monthly;
-          if (amt < 0) recurringBills += monthly;
-
-        } catch { }
-      }
-
-      const recurringNet = recurringIncome - recurringBills;
+      const recurring = getRecurringMonthlyNet(db);
+      const recurringNet = recurring.net;
 
       const debts = db.prepare(`
         SELECT balance, apr
@@ -122,7 +118,6 @@ module.exports = function registerFinancialHealthHandler(bot, deps) {
       if (totalDebt > 0) weightedApr /= totalDebt;
 
       let runwayMonths = Infinity;
-
       if (netMonthly < 0) {
         const burn = Math.abs(netMonthly);
         runwayMonths = burn > 0 ? bankBalance / burn : Infinity;
@@ -151,73 +146,64 @@ module.exports = function registerFinancialHealthHandler(bot, deps) {
 
       const healthLabel = label(score);
 
-      let strengths = [];
-      let drags = [];
-      let focus = [];
+      const strengths = [];
+      const drags = [];
+      const focus = [];
 
-      if (netMonthly > 0)
-        strengths.push("positive monthly cashflow");
-      else
-        drags.push("negative monthly cashflow");
+      if (netMonthly > 0) strengths.push("positive monthly cashflow");
+      else drags.push("negative monthly cashflow");
 
-      if (recurringNet > 0)
-        strengths.push("recurring income exceeds bills");
-      else
-        drags.push("recurring bills exceed income");
+      if (recurringNet > 0) strengths.push("recurring income exceeds bills");
+      else drags.push("recurring bills exceed income");
 
-      if (weightedApr >= 20)
-        drags.push("high interest debt");
+      if (weightedApr >= 20) drags.push("high interest debt");
+      if (weightedApr >= 20) focus.push("pay down high APR debt");
+      if (netMonthly < 0) focus.push("improve monthly cashflow");
+      if (focus.length === 0) focus.push("maintain current trajectory");
 
-      if (weightedApr >= 20)
-        focus.push("pay down high APR debt");
+      const runwayText =
+        runwayMonths === Infinity ? "∞" : `${runwayMonths.toFixed(1)} months`;
 
-      if (netMonthly < 0)
-        focus.push("improve monthly cashflow");
-
-      if (focus.length === 0)
-        focus.push("maintain current trajectory");
-
-      let runwayText =
-        runwayMonths === Infinity
-          ? "∞"
-          : `${runwayMonths.toFixed(1)} months`;
-
-      let out = "🩺 Financial Health\n\n";
-
-      out += "```\n";
-      out += `Score:            ${score}/100  ${healthLabel}\n`;
-      out += `Cash on Hand:     ${money(bankBalance)}\n`;
-      out += `Net Worth:        ${money(netWorth)}\n`;
-      out += `Monthly Net:      ${netMonthly >= 0 ? "+" : "-"}${money(Math.abs(netMonthly))}\n`;
-      out += `Recurring Net:    ${recurringNet >= 0 ? "+" : "-"}${money(Math.abs(recurringNet))}\n`;
-      out += `Runway:           ${runwayText}\n`;
-      out += `Debt Total:       ${money(totalDebt)}\n`;
-      out += `Weighted APR:     ${weightedApr.toFixed(2)}%\n`;
-      out += "```\n\n";
-
-      if (strengths.length)
-        out += `✅ Strength: ${strengths[0]}\n`;
-
-      if (drags.length)
-        out += `⚠️ Drag: ${drags[0]}\n`;
-
-      out += `🎯 Focus: ${focus[0]}`;
+      const out = [
+        "🩺 *Financial Health*",
+        "",
+        codeBlock([
+          `Score            ${score}/100  ${healthLabel}`,
+          `Cash on Hand     ${formatMoney(bankBalance)}`,
+          `Net Worth        ${formatMoney(netWorth)}`,
+          `Monthly Net      ${netMonthly >= 0 ? "+" : "-"}${formatMoney(Math.abs(netMonthly))}`,
+          `Recurring Net    ${recurringNet >= 0 ? "+" : "-"}${formatMoney(Math.abs(recurringNet))}`,
+          `Runway           ${runwayText}`,
+          `Debt Total       ${formatMoney(totalDebt)}`,
+          `Weighted APR     ${weightedApr.toFixed(2)}%`
+        ].join("\n")),
+        strengths.length ? `✅ Strength: ${strengths[0]}` : null,
+        drags.length ? `⚠️ Drag: ${drags[0]}` : null,
+        `🎯 Focus: ${focus[0]}`
+      ].filter(Boolean).join("\n");
 
       return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
       });
-
     } catch (err) {
-
       console.error("financial_health error:", err);
-
-      return bot.sendMessage(
-        chatId,
-        "Error calculating financial health."
-      );
-
+      return bot.sendMessage(chatId, "Error calculating financial health.");
     }
-
   });
+};
 
+module.exports.help = {
+  command: "financial_health",
+  category: "Reporting",
+  summary: "Show a financial scorecard.",
+  usage: [
+    "/financial_health"
+  ],
+  examples: [
+    "/financial_health"
+  ],
+  notes: [
+    "Score ranges from 0 to 100.",
+    "Uses current month posted income and expenses plus recurring cashflow."
+  ]
 };

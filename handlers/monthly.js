@@ -1,8 +1,47 @@
+// handlers/monthly.js
 module.exports = function registerMonthlyHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
-  bot.onText(/^\/monthly(@\w+)?$/, (msg) => {
+  function renderHelp() {
+    return [
+      "*\\/monthly*",
+      "This month's income, expenses, and net.",
+      "",
+      "*Usage*",
+      "- `/monthly`",
+      "",
+      "*Examples*",
+      "- `/monthly`"
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/monthly(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return sendHelp(chatId);
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/monthly` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/monthly`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
       const rows = db.prepare(`
@@ -22,26 +61,40 @@ module.exports = function registerMonthlyHandler(bot, deps) {
 
       for (const r of rows) {
         const v = Math.abs(Number(r.total) || 0);
-
         if (r.type === "INCOME") income = v;
         if (r.type === "EXPENSES") expenses = v;
       }
 
       const net = income - expenses;
 
-      let out = "📊 This Month\n\n";
-      out += `Income:     $${income.toFixed(2)}\n`;
-      out += `Expenses:   $${expenses.toFixed(2)}\n`;
-      out += `--------------------\n`;
-      out += `Net:        $${net.toFixed(2)}`;
+      const out = [
+        "📊 *This Month*",
+        "",
+        codeBlock([
+          `Income    ${formatMoney(income)}`,
+          `Expenses  ${formatMoney(expenses)}`,
+          `Net       ${net >= 0 ? "+" : "-"}${formatMoney(Math.abs(net))}`
+        ].join("\n"))
+      ].join("\n");
 
-      return bot.sendMessage(chatId, "```\n" + out + "\n```", {
+      return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
       });
-
     } catch (err) {
       console.error("Monthly error:", err);
       return bot.sendMessage(chatId, "Error calculating monthly totals.");
     }
   });
+};
+
+module.exports.help = {
+  command: "monthly",
+  category: "General",
+  summary: "This month's income, expenses, and net.",
+  usage: [
+    "/monthly"
+  ],
+  examples: [
+    "/monthly"
+  ]
 };

@@ -1,25 +1,46 @@
 // handlers/cashflow.js
-
 module.exports = function registerCashflowHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format, finance } = deps;
+  const { formatMoney, codeBlock } = format;
+  const { getRecurringMonthlyNet } = finance;
 
-  function monthlyMultiplier(freq) {
-    switch ((freq || "").toLowerCase()) {
-      case "daily":
-        return 30;
-      case "weekly":
-        return 4.33;
-      case "monthly":
-        return 1;
-      case "yearly":
-        return 1 / 12;
-      default:
-        return 0;
-    }
+  function renderHelp() {
+    return [
+      "*\\/cashflow*",
+      "Show recurring monthly income versus recurring monthly bills.",
+      "",
+      "*Usage*",
+      "- `/cashflow`",
+      "",
+      "*Examples*",
+      "- `/cashflow`"
+    ].join("\n");
   }
 
-  bot.onText(/^\/cashflow(@\w+)?$/, (msg) => {
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), { parse_mode: "Markdown" });
+  }
+
+  bot.onText(/^\/cashflow(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return sendHelp(chatId);
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/cashflow` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/cashflow`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
       const rows = db.prepare(`
@@ -32,46 +53,37 @@ module.exports = function registerCashflowHandler(bot, deps) {
         return bot.sendMessage(chatId, "No recurring items saved yet.");
       }
 
-      let incomeMonthly = 0;
-      let billsMonthly = 0;
+      const recurring = getRecurringMonthlyNet(db);
+      const net = recurring.net;
 
-      for (const r of rows) {
-        const mult = monthlyMultiplier(r.frequency);
-        if (!mult) continue;
+      const out = [
+        "📊 *Monthly Cashflow (Recurring)*",
+        "",
+        codeBlock([
+          `Recurring Income  ${formatMoney(recurring.income)}`,
+          `Recurring Bills   ${formatMoney(recurring.bills)}`,
+          `Net Monthly       ${net >= 0 ? "+" : "-"}${formatMoney(Math.abs(net))}`
+        ].join("\n"))
+      ].join("\n");
 
-        let bankAmt = 0;
-        try {
-          const postings = JSON.parse(r.postings_json);
-          const bankLine = Array.isArray(postings)
-            ? postings.find((p) => p.account === "assets:bank")
-            : null;
-
-          bankAmt = Number(bankLine?.amount) || 0;
-        } catch {
-          bankAmt = 0;
-        }
-
-        const monthlyAmt = Math.abs(bankAmt) * mult;
-
-        if (bankAmt > 0) incomeMonthly += monthlyAmt; // money into bank
-        if (bankAmt < 0) billsMonthly += monthlyAmt;  // money out of bank
-      }
-
-      const net = incomeMonthly - billsMonthly;
-
-      const sign = net >= 0 ? "+" : "-";
-      const netAbs = Math.abs(net);
-
-      return bot.sendMessage(
-        chatId,
-        `📊 Monthly Cashflow (Recurring)\n\n` +
-        `Recurring Income: $${incomeMonthly.toFixed(2)}\n` +
-        `Recurring Bills:  $${billsMonthly.toFixed(2)}\n\n` +
-        `Net Monthly:      ${sign}$${netAbs.toFixed(2)}`
-      );
+      return bot.sendMessage(chatId, out, {
+        parse_mode: "Markdown"
+      });
     } catch (err) {
       console.error("Cashflow error:", err);
       return bot.sendMessage(chatId, "Error calculating cashflow.");
     }
   });
+};
+
+module.exports.help = {
+  command: "cashflow",
+  category: "General",
+  summary: "Recurring monthly income vs bills.",
+  usage: [
+    "/cashflow"
+  ],
+  examples: [
+    "/cashflow"
+  ]
 };

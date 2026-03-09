@@ -1,8 +1,8 @@
 // handlers/upcoming.js
 module.exports = function registerUpcomingHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
-  // Local date -> YYYY-MM-DD (NO toISOString)
   function ymd(d) {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -10,14 +10,13 @@ module.exports = function registerUpcomingHandler(bot, deps) {
     return `${y}-${m}-${day}`;
   }
 
-  // Parse YYYY-MM-DD into a LOCAL date at midday (avoids DST/midnight issues)
   function parseYMD(s) {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || "").trim());
     if (!m) return null;
     const y = Number(m[1]);
     const mo = Number(m[2]) - 1;
     const d = Number(m[3]);
-    const dt = new Date(y, mo, d, 12, 0, 0, 0); // midday
+    const dt = new Date(y, mo, d, 12, 0, 0, 0);
     return isNaN(dt.getTime()) ? null : dt;
   }
 
@@ -29,24 +28,20 @@ module.exports = function registerUpcomingHandler(bot, deps) {
       case "daily":
         d.setDate(d.getDate() + 1);
         return d;
-
       case "weekly":
         d.setDate(d.getDate() + 7);
         return d;
-
       case "monthly": {
         const day = d.getDate();
         d.setMonth(d.getMonth() + 1);
-        if (d.getDate() !== day) d.setDate(0); // rollover
+        if (d.getDate() !== day) d.setDate(0);
         d.setHours(12, 0, 0, 0);
         return d;
       }
-
       case "yearly":
         d.setFullYear(d.getFullYear() + 1);
         d.setHours(12, 0, 0, 0);
         return d;
-
       default:
         return null;
     }
@@ -70,28 +65,50 @@ module.exports = function registerUpcomingHandler(bot, deps) {
     return bankAmt >= 0 ? "income" : "bill";
   }
 
-  // Usage:
-  // /upcoming
-  // /upcoming bill
-  // /upcoming income
-  // /upcoming 60
-  // /upcoming 60 bill
-  // /upcoming bill 60 25
-  bot.onText(/^\/upcoming(?:\s+(.+))?$/i, (msg, match) => {
+  function renderHelp() {
+    return [
+      "*\\/upcoming*",
+      "Show upcoming recurring events.",
+      "",
+      "*Usage*",
+      "- `/upcoming`",
+      "- `/upcoming <bill|income>`",
+      "- `/upcoming <days>`",
+      "- `/upcoming <bill|income> <days> <limit>`",
+      "",
+      "*Examples*",
+      "- `/upcoming`",
+      "- `/upcoming bill`",
+      "- `/upcoming 60`",
+      "- `/upcoming bill 60 25`",
+      "",
+      "*Notes*",
+      "- Default range is 30 days.",
+      "- Default limit is 10 events."
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/upcoming(?:@\w+)?(?:\s+(.+))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = (match?.[1] || "").trim();
+
+    if (/^(help|--help|-h)$/i.test(raw)) {
+      return sendHelp(chatId);
+    }
 
     try {
-      const raw = (match[1] || "").trim();
       const tokens = raw ? raw.split(/\s+/) : [];
 
-      let filter = "all"; // all | bill | income
+      let filter = "all";
       let days = 30;
       let limit = 10;
 
-      // Parse tokens in any order:
-      // - bill|income
-      // - number => days
-      // - number => limit (2nd number)
       for (const t of tokens) {
         const lower = t.toLowerCase();
         if (lower === "bill" || lower === "bills") filter = "bill";
@@ -108,14 +125,22 @@ module.exports = function registerUpcomingHandler(bot, deps) {
       if (!Number.isFinite(days) || days < 1 || days > 365) {
         return bot.sendMessage(
           chatId,
-          "Usage: /upcoming [bill|income] [days<=365] [limit<=50]\nExample: /upcoming bill 60 25"
+          [
+            "Usage: `/upcoming [bill|income] [days<=365] [limit<=50]`",
+            "Example: `/upcoming bill 60 25`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
         );
       }
 
       if (!Number.isFinite(limit) || limit < 1 || limit > 50) {
         return bot.sendMessage(
           chatId,
-          "Usage: /upcoming [bill|income] [days<=365] [limit<=50]\nExample: /upcoming bill 60 25"
+          [
+            "Usage: `/upcoming [bill|income] [days<=365] [limit<=50]`",
+            "Example: `/upcoming bill 60 25`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
         );
       }
 
@@ -145,7 +170,6 @@ module.exports = function registerUpcomingHandler(bot, deps) {
         const kind = classifyKind(bankAmt);
         const displayAmt = bankAmt == null ? null : Math.abs(bankAmt);
 
-        // Filter early: this recurring won't change kind over time
         if (filter !== "all" && kind !== filter) continue;
 
         let guard = 0;
@@ -185,24 +209,55 @@ module.exports = function registerUpcomingHandler(bot, deps) {
       }
 
       const shown = events.slice(0, limit);
-
       const headerKind =
         filter === "all" ? "recurring" : filter === "bill" ? "bills" : "income";
 
-      let out = `📌 Upcoming ${headerKind} (next ${shown.length} of ${events.length})\n\n`;
-
-      for (const e of shown) {
+      const lines = shown.map((e) => {
         const ref = String(e.hash || "").slice(0, 6);
-        const amtText = e.amount == null ? "" : `$${e.amount.toFixed(2)}`;
-        out += `• ${e.date}  ${e.description}  ${amtText}  (${e.frequency})  #${e.id} ${ref}\n`;
-      }
+        const amtText = e.amount == null ? "" : formatMoney(e.amount);
+        return `${e.date}  ${e.description}  ${amtText}  (${e.frequency})  #${e.id} ${ref}`;
+      });
 
-      out += `\nTip: /upcoming bill 60 25`;
+      const out = [
+        `📌 *Upcoming ${headerKind} (next ${shown.length} of ${events.length})*`,
+        "",
+        codeBlock(lines.join("\n")),
+        "Tip: `/upcoming bill 60 25`"
+      ].join("\n");
 
-      return bot.sendMessage(chatId, out);
+      return bot.sendMessage(chatId, out, {
+        parse_mode: "Markdown"
+      });
     } catch (err) {
       console.error("Upcoming error:", err);
       return bot.sendMessage(chatId, "Error generating upcoming list.");
     }
   });
+};
+
+module.exports.help = {
+  command: "upcoming",
+  category: "General",
+  summary: "Show upcoming recurring events.",
+  usage: [
+    "/upcoming",
+    "/upcoming <bill|income>",
+    "/upcoming <days>",
+    "/upcoming <bill|income> <days> <limit>"
+  ],
+  args: [
+    { name: "<bill|income>", description: "Optional filter." },
+    { name: "<days>", description: "Optional day range. Defaults to 30." },
+    { name: "<limit>", description: "Optional max rows. Defaults to 10." }
+  ],
+  examples: [
+    "/upcoming",
+    "/upcoming bill",
+    "/upcoming 60",
+    "/upcoming bill 60 25"
+  ],
+  notes: [
+    "Default range is 30 days.",
+    "Default limit is 10 events."
+  ]
 };

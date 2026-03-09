@@ -1,73 +1,73 @@
 // handlers/year_projection.js
 module.exports = function registerYearProjectionHandler(bot, deps) {
-  const { db, ledgerService } = deps;
+  const { ledgerService, format, finance } = deps;
+  const { formatMoney, codeBlock } = format;
+  const { getRecurringMonthlyNet } = finance;
 
-  function monthlyMultiplier(freq) {
-    switch ((freq || "").toLowerCase()) {
-      case "daily":
-        return 30;
-      case "weekly":
-        return 4.33;
-      case "monthly":
-        return 1;
-      case "yearly":
-        return 1 / 12;
-      default:
-        return 0;
-    }
+  function renderHelp() {
+    return [
+      "*\\/year_projection*",
+      "12-month projection using recurring cashflow.",
+      "",
+      "*Usage*",
+      "- `/year_projection`",
+      "",
+      "*Examples*",
+      "- `/year_projection`"
+    ].join("\n");
   }
 
-  bot.onText(/^\/year_projection(@\w+)?$/, (msg) => {
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/year_projection(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return sendHelp(chatId);
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/year_projection` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/year_projection`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
       const balances = ledgerService.getBalances();
       const bank = balances.find((b) => b.account === "assets:bank");
       const currentBalance = Number(bank?.balance) || 0;
 
-      const rows = db.prepare(`
-        SELECT description, postings_json, frequency
-        FROM recurring_transactions
-        ORDER BY id ASC
-      `).all();
-
-      let recurringIncomeMonthly = 0;
-      let recurringBillsMonthly = 0;
-
-      for (const r of rows) {
-        const mult = monthlyMultiplier(r.frequency);
-        if (!mult) continue;
-
-        let bankAmt = 0;
-        try {
-          const postings = JSON.parse(r.postings_json);
-          const bankLine = Array.isArray(postings)
-            ? postings.find((p) => p.account === "assets:bank")
-            : null;
-
-          bankAmt = Number(bankLine?.amount) || 0;
-        } catch {
-          bankAmt = 0;
-        }
-
-        const monthlyAmt = Math.abs(bankAmt) * mult;
-
-        if (bankAmt > 0) recurringIncomeMonthly += monthlyAmt;
-        if (bankAmt < 0) recurringBillsMonthly += monthlyAmt;
-      }
-
-      const netMonthly = recurringIncomeMonthly - recurringBillsMonthly;
+      const recurring = getRecurringMonthlyNet(deps.db);
+      const recurringIncomeMonthly = recurring.income;
+      const recurringBillsMonthly = recurring.bills;
+      const netMonthly = recurring.net;
       const projected12Months = currentBalance + netMonthly * 12;
 
-      let out = "📈 12-Month Projection\n\n";
-      out += `Current Balance:     $${currentBalance.toFixed(2)}\n`;
-      out += `Recurring Income:    $${recurringIncomeMonthly.toFixed(2)} / month\n`;
-      out += `Recurring Bills:     $${recurringBillsMonthly.toFixed(2)} / month\n`;
-      out += `Net Monthly:         ${netMonthly >= 0 ? "+" : "-"}$${Math.abs(netMonthly).toFixed(2)}\n`;
-      out += `-----------------------------------\n`;
-      out += `Projected in 12 mo:  $${projected12Months.toFixed(2)}`;
+      const out = [
+        "📈 *12-Month Projection*",
+        "",
+        codeBlock([
+          `Current Balance    ${formatMoney(currentBalance)}`,
+          `Recurring Income   ${formatMoney(recurringIncomeMonthly)} / month`,
+          `Recurring Bills    ${formatMoney(recurringBillsMonthly)} / month`,
+          `Net Monthly        ${netMonthly >= 0 ? "+" : "-"}${formatMoney(Math.abs(netMonthly))}`,
+          `Projected in 12 mo ${formatMoney(projected12Months)}`
+        ].join("\n"))
+      ].join("\n");
 
-      return bot.sendMessage(chatId, "```\n" + out + "\n```", {
+      return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
       });
     } catch (err) {
@@ -75,4 +75,16 @@ module.exports = function registerYearProjectionHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error calculating year projection.");
     }
   });
+};
+
+module.exports.help = {
+  command: "year_projection",
+  category: "General",
+  summary: "12-month projection using recurring cashflow.",
+  usage: [
+    "/year_projection"
+  ],
+  examples: [
+    "/year_projection"
+  ]
 };
