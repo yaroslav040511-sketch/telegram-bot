@@ -1,8 +1,51 @@
+// handlers/debts.js
 module.exports = function registerDebtsHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format } = deps;
+  const { formatMoney, renderTable } = format;
 
-  bot.onText(/^\/debts(@\w+)?$/, (msg) => {
+  function renderHelp() {
+    return [
+      "*\\/debts*",
+      "List all recorded debts with balance, APR, and minimum payment.",
+      "",
+      "*Usage*",
+      "- `/debts`",
+      "",
+      "*Examples*",
+      "- `/debts`",
+      "",
+      "*Notes*",
+      "- Debts are sorted by balance descending.",
+      "- Output is shown in a Markdown code block table."
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/debts(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return sendHelp(chatId);
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/debts` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/debts`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
       const rows = db.prepare(`
@@ -15,24 +58,57 @@ module.exports = function registerDebtsHandler(bot, deps) {
         return bot.sendMessage(chatId, "No debts recorded.");
       }
 
-      let out = "💳 Debts\n\n```\n";
+      const tableRows = rows.map((row) => [
+        String(row.name || ""),
+        formatMoney(Number(row.balance) || 0),
+        `${(Number(row.apr) || 0).toFixed(2)}%`,
+        formatMoney(Number(row.minimum) || 0)
+      ]);
 
-      for (const r of rows) {
-        const name = r.name.padEnd(14);
-        const bal = `$${Number(r.balance).toFixed(2)}`.padStart(10);
-        const apr = `${Number(r.apr).toFixed(1)}%`.padStart(6);
-        const min = `$${Number(r.minimum).toFixed(2)}`.padStart(8);
+      const totalDebt = rows.reduce(
+        (sum, row) => sum + (Number(row.balance) || 0),
+        0
+      );
 
-        out += `${name} ${bal}  APR:${apr}  Min:${min}\n`;
-      }
+      const totalMinimum = rows.reduce(
+        (sum, row) => sum + (Number(row.minimum) || 0),
+        0
+      );
 
-      out += "```";
+      const out = [
+        "💳 *Debts*",
+        "",
+        renderTable(
+          ["Name", "Balance", "APR", "Minimum"],
+          tableRows,
+          { aligns: ["left", "right", "right", "right"] }
+        ),
+        `Total Debt: \`${formatMoney(totalDebt)}\``,
+        `Total Minimums: \`${formatMoney(totalMinimum)}\``
+      ].join("\n");
 
-      return bot.sendMessage(chatId, out, { parse_mode: "Markdown" });
-
+      return bot.sendMessage(chatId, out, {
+        parse_mode: "Markdown"
+      });
     } catch (err) {
       console.error("debts error:", err);
       return bot.sendMessage(chatId, "Error retrieving debts.");
     }
   });
+};
+
+module.exports.help = {
+  command: "debts",
+  category: "Debt",
+  summary: "List all recorded debts with balance, APR, and minimum payment.",
+  usage: [
+    "/debts"
+  ],
+  examples: [
+    "/debts"
+  ],
+  notes: [
+    "Debts are sorted by balance descending.",
+    "Output is shown in a Markdown code block table."
+  ]
 };

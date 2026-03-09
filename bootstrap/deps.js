@@ -8,25 +8,26 @@ const recurringService = require("../services/recurringService");
 
 const simulateCashflow = require("../core/simulation");
 
+const format = require("../utils/format");
+
 module.exports = function createDeps(db, openai) {
   const ledgerService = createLedgerService(db);
   const financeEngine = createFinanceEngine(ledgerService);
   const recurringProcessor = createRecurringProcessor(db, ledgerService);
 
   const deps = {
-    // core
     db,
     openai,
 
-    // services
     ledgerService,
     financeEngine,
     reportService,
     recurringService,
     recurringProcessor,
 
-    // helpers / core modules
-    simulateCashflow
+    simulateCashflow,
+
+    format
   };
 
   return Object.freeze(deps);

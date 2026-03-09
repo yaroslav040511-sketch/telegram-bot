@@ -1,17 +1,94 @@
 // handlers/debt_pay.js
 module.exports = function registerDebtPayHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
-  // /debt_pay chase 200
-  bot.onText(/^\/debt_pay\s+(\S+)\s+(\d+(\.\d+)?)$/i, (msg, match) => {
+  function renderHelp() {
+    return [
+      "*\\/debt_pay*",
+      "Apply a payment to a debt balance.",
+      "",
+      "*Usage*",
+      "- `/debt_pay <name> <amount>`",
+      "",
+      "*Arguments*",
+      "- `<name>` — Debt name, such as `visa` or `student_loan`.",
+      "- `<amount>` — Positive payment amount.",
+      "",
+      "*Examples*",
+      "- `/debt_pay chase 200`",
+      "- `/debt_pay visa 95.50`",
+      "",
+      "*Notes*",
+      "- Payment is capped at the remaining balance.",
+      "- Debt names should not contain spaces in this version.",
+      "- Matching is case-insensitive."
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/debt_pay(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (!raw || /^(help|--help|-h)$/i.test(raw)) {
+      return sendHelp(chatId);
+    }
 
     try {
-      const name = match[1];
-      const payment = Number(match[2]);
+      const parsed = raw.match(/^(\S+)\s+(-?\d+(?:\.\d+)?)$/);
+
+      if (!parsed) {
+        return bot.sendMessage(
+          chatId,
+          [
+            "Missing or invalid arguments for `/debt_pay`.",
+            "",
+            "Usage:",
+            "`/debt_pay <name> <amount>`",
+            "",
+            "Example:",
+            "`/debt_pay chase 200`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
+      }
+
+      const name = String(parsed[1] || "").trim();
+      const payment = Number(parsed[2]);
+
+      if (!name) {
+        return bot.sendMessage(
+          chatId,
+          [
+            "Debt name is required.",
+            "",
+            "Usage:",
+            "`/debt_pay <name> <amount>`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
+      }
 
       if (!Number.isFinite(payment) || payment <= 0) {
-        return bot.sendMessage(chatId, "Usage: /debt_pay <name> <amount>");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Payment amount must be a positive number.",
+            "",
+            "Usage:",
+            "`/debt_pay <name> <amount>`",
+            "",
+            "Example:",
+            "`/debt_pay chase 200`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
       const debt = db.prepare(`
@@ -21,7 +98,11 @@ module.exports = function registerDebtPayHandler(bot, deps) {
       `).get(name);
 
       if (!debt) {
-        return bot.sendMessage(chatId, `Debt not found: ${name}`);
+        return bot.sendMessage(
+          chatId,
+          `Debt not found: \`${name}\``,
+          { parse_mode: "Markdown" }
+        );
       }
 
       const oldBalance = Number(debt.balance) || 0;
@@ -34,20 +115,50 @@ module.exports = function registerDebtPayHandler(bot, deps) {
         WHERE id = ?
       `).run(newBalance, debt.id);
 
-      let out = "💳 Debt Payment Applied\n\n";
-      out += `${debt.name}\n`;
-      out += `Old Balance: $${oldBalance.toFixed(2)}\n`;
-      out += `Payment:     $${applied.toFixed(2)}\n`;
-      out += `New Balance: $${newBalance.toFixed(2)}`;
+      const lines = [
+        "💳 *Debt payment applied*",
+        "",
+        codeBlock([
+          `Name         ${debt.name}`,
+          `Old Balance  ${formatMoney(oldBalance)}`,
+          `Payment      ${formatMoney(applied)}`,
+          `New Balance  ${formatMoney(newBalance)}`
+        ].join("\n"))
+      ];
 
       if (payment > oldBalance) {
-        out += `\n\nOnly $${applied.toFixed(2)} was needed to pay this debt off.`;
+        lines.push("");
+        lines.push(`Only \`${formatMoney(applied)}\` was needed to pay this debt off.`);
       }
 
-      return bot.sendMessage(chatId, out);
+      return bot.sendMessage(chatId, lines.join("\n"), {
+        parse_mode: "Markdown"
+      });
     } catch (err) {
       console.error("debt_pay error:", err);
       return bot.sendMessage(chatId, "Error applying debt payment.");
     }
   });
+};
+
+module.exports.help = {
+  command: "debt_pay",
+  category: "Debt",
+  summary: "Apply a payment to a debt balance.",
+  usage: [
+    "/debt_pay <name> <amount>"
+  ],
+  args: [
+    { name: "<name>", description: "Debt name, such as visa or student_loan." },
+    { name: "<amount>", description: "Positive payment amount." }
+  ],
+  examples: [
+    "/debt_pay chase 200",
+    "/debt_pay visa 95.50"
+  ],
+  notes: [
+    "Payment is capped at the remaining balance.",
+    "Debt names should not contain spaces in this version.",
+    "Matching is case-insensitive."
+  ]
 };

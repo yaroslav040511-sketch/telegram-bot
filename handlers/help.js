@@ -1,33 +1,60 @@
 // handlers/help.js
-const help = require("../data/help_registry");
+function escapeMarkdown(text) {
+  return String(text || "").replace(/([_*`\[])/g, "\\$1");
+}
 
-module.exports = function registerHelpHandler(bot) {
-  bot.onText(/^\/help(?:@\w+)?(?:\s+([a-zA-Z_]+))?$/i, (msg, match) => {
+function sendMarkdown(bot, chatId, text) {
+  return bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
+}
+
+function registerHelpHandler(bot, deps) {
+  const { commandRegistry } = deps;
+
+  bot.onText(/^\/help(?:@\w+)?(?:\s+(.+))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
-    const topic = String(match?.[1] || "").toLowerCase();
+    const raw = String(match?.[1] || "").trim();
 
-    if (!topic) {
-      let out = "🤖 Help\n\n";
-      out += "Use `/help <command>` or `/<command> help`\n\n";
-      out += "Examples:\n";
-      out += "/help add\n";
-      out += "/add help\n";
-      return bot.sendMessage(chatId, out, { parse_mode: "Markdown" });
+    if (!raw) {
+      return sendMarkdown(bot, chatId, commandRegistry.renderOverview());
     }
 
-    const item = help[topic];
-    if (!item) {
-      return bot.sendMessage(chatId, `No help found for: ${topic}`);
+    const helpText = commandRegistry.renderCommandHelp(raw);
+
+    if (!helpText) {
+      return sendMarkdown(
+        bot,
+        chatId,
+        [
+          `Unknown command: \`${escapeMarkdown(raw)}\``,
+          "",
+          "Use `/help` to see all commands."
+        ].join("\n")
+      );
     }
 
-    let out = `📘 /${topic}\n\n`;
-    out += `${item.description}\n\n`;
-    out += `Usage:\n${item.usage}\n`;
-
-    if (item.examples?.length) {
-      out += `\nExamples:\n${item.examples.join("\n")}`;
-    }
-
-    return bot.sendMessage(chatId, out);
+    return sendMarkdown(bot, chatId, helpText);
   });
+}
+
+registerHelpHandler.help = {
+  command: "help",
+  category: "General",
+  summary: "Show all commands or detailed help for one command.",
+  usage: [
+    "/help",
+    "/help <command>"
+  ],
+  args: [
+    { name: "<command>", description: "Optional command name to inspect." }
+  ],
+  examples: [
+    "/help",
+    "/help add",
+    "/help forecast",
+    "/help debt_add"
+  ],
+  notes: [
+    "Many commands also support `/<command> help`."
+  ]
 };
+
