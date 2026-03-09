@@ -1,4 +1,5 @@
-// handlers/retirement_fi.js
+const { yearsMonths } = require("../utils/dates");
+
 module.exports = function registerRetirementFIHandler(bot, deps) {
   const { db, ledgerService, format, finance } = deps;
   const { formatMoney, codeBlock } = format;
@@ -6,13 +7,6 @@ module.exports = function registerRetirementFIHandler(bot, deps) {
     getStartingAssets,
     getRecurringMonthlyNet
   } = finance;
-
-  function yearsMonths(totalMonths) {
-    return {
-      years: Math.floor(totalMonths / 12),
-      months: totalMonths % 12
-    };
-  }
 
   function targetDate(monthsAhead) {
     const d = new Date();

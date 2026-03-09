@@ -1,18 +1,13 @@
 // handlers/retirement.js
+const { yearsMonths } = require("../utils/dates");
+
 module.exports = function registerRetirementHandler(bot, deps) {
   const { db, ledgerService, format, finance } = deps;
   const { formatMoney, codeBlock } = format;
   const {
     getStartingAssets,
-    getRecurringMonthlyNet,
-    simulateFIMonths
+    getRecurringMonthlyNet
   } = finance;
-
-  function yearsMonths(months) {
-    const y = Math.floor(months / 12);
-    const m = months % 12;
-    return { y, m };
-  }
 
   function getStartingInvestableBalance() {
     return getStartingAssets(ledgerService);
@@ -185,7 +180,7 @@ module.exports = function registerRetirementHandler(bot, deps) {
       }
 
       const months = simulate(startBalance, monthlySave, annualReturn, target);
-      const { y, m } = yearsMonths(months);
+      const ym = yearsMonths(months);
       const date = targetDate(months);
 
       return sendMarkdown(
@@ -200,7 +195,7 @@ module.exports = function registerRetirementHandler(bot, deps) {
             `Monthly Investment ${formatMoney(monthlySave)}`,
             `Annual Return      ${annualReturn}%`,
             `Target             ${formatMoney(target)}`,
-            `Time to Goal       ${y}y ${m}m`,
+            `Time to Goal       ${ym.years}y ${ym.months}m`,
             `Target Date        ${date}`
           ].join("\n"))
         ].join("\n")
@@ -302,7 +297,7 @@ module.exports = function registerRetirementHandler(bot, deps) {
       }
 
       const months = simulate(startBalance, monthlySave, annualReturn, target);
-      const { y, m } = yearsMonths(months);
+      const ym = yearsMonths(months);
       const date = targetDate(months);
 
       return sendMarkdown(
@@ -317,7 +312,7 @@ module.exports = function registerRetirementHandler(bot, deps) {
             `Monthly Surplus    ${formatMoney(monthlySave)}`,
             `Annual Return      ${annualReturn}%`,
             `Target             ${formatMoney(target)}`,
-            `Time to Goal       ${y}y ${m}m`,
+            `Time to Goal       ${ym.years}y ${ym.months}m`,
             `Target Date        ${date}`
           ].join("\n"))
         ].join("\n")

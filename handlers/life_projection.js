@@ -1,4 +1,5 @@
-// handlers/life_projection.js
+const { yearsMonths } = require("../utils/dates");
+
 module.exports = function registerLifeProjectionHandler(bot, deps) {
   const { db, ledgerService, finance, debt } = deps;
   const {
@@ -10,13 +11,6 @@ module.exports = function registerLifeProjectionHandler(bot, deps) {
 
   function money(n) {
     return `$${(Number(n) || 0).toFixed(2)}`;
-  }
-
-  function yearsMonths(totalMonths) {
-    return {
-      years: Math.floor(totalMonths / 12),
-      months: totalMonths % 12
-    };
   }
 
   function futureDate(monthsAhead) {
