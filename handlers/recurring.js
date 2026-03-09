@@ -5,10 +5,6 @@ module.exports = function registerRecurringHandler(bot, deps) {
   const { db, format } = deps;
   const { formatMoney, renderTable, codeBlock } = format;
 
-  // ---------------------------
-  // Helpers
-  // ---------------------------
-
   function stripQuotes(s) {
     const t = String(s || "").trim();
     if (
@@ -28,7 +24,6 @@ module.exports = function registerRecurringHandler(bot, deps) {
     return bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
   }
 
-  // Local date -> YYYY-MM-DD (NO toISOString)
   function ymd(dateObj) {
     const y = dateObj.getFullYear();
     const m = String(dateObj.getMonth() + 1).padStart(2, "0");
@@ -40,7 +35,6 @@ module.exports = function registerRecurringHandler(bot, deps) {
     return new Date(year, monthIndex0 + 1, 0).getDate();
   }
 
-  // Use MIDDAY to avoid DST/midnight drift
   function atMidday(d) {
     const x = new Date(d);
     x.setHours(12, 0, 0, 0);
@@ -153,9 +147,7 @@ module.exports = function registerRecurringHandler(bot, deps) {
       } else {
         const day = Number(monthlyArg);
         if (!Number.isInteger(day) || day < 1 || day > 31) {
-          return {
-            error: monthlyHelpText
-          };
+          return { error: monthlyHelpText };
         }
         monthlySpec = { kind: "day", day };
       }
@@ -178,12 +170,11 @@ module.exports = function registerRecurringHandler(bot, deps) {
       "- `<description>` — Description, optionally quoted if it contains spaces.",
       "- `<amount>` — Positive amount.",
       "- `<daily|weekly|monthly|yearly>` — Frequency.",
-      "- `<day>` — For monthly items, an optional day from `1` to `31`, or `last`.",
+      "- `<day>` — Optional monthly day from `1` to `31`, or `last`.",
       "",
       "*Examples*",
       "- `/recurring rent 427 monthly 3`",
       "- `/recurring \"Rent\" 427 monthly last`",
-      "- `/recurring gym 45 monthly 15`",
       "- `/recurring spotify 11.99 monthly`",
       "",
       "*Notes*",
@@ -206,29 +197,7 @@ module.exports = function registerRecurringHandler(bot, deps) {
       "- `<description>` — Description, optionally quoted if it contains spaces.",
       "- `<amount>` — Positive amount.",
       "- `<daily|weekly|monthly|yearly>` — Frequency.",
-      "- `<day>` — For monthly items, an optional day from `1` to `31`, or `last`.",
-      "",
-      "*Examples*",
-      "- `/recurring_income paycheck 2500 biweekly`",
-      "- `/recurring_income \"Social Security\" 1500 monthly 3`",
-      "- `/recurring_income pension 1200 monthly last`",
-      "",
-      "*Notes*",
-      "- Income recurring items debit `assets:bank` and credit `income:recurring`."
-    ].replace("biweekly", "weekly").join ? "" : [
-      "*\\/recurring_income*",
-      "Add recurring income flowing into `assets:bank` from `income:recurring`.",
-      "",
-      "*Usage*",
-      "- `/recurring_income <description> <amount> <daily|weekly|monthly|yearly>`",
-      "- `/recurring_income <description> <amount> monthly <day>`",
-      "- `/recurring_income <description> <amount> monthly last`",
-      "",
-      "*Arguments*",
-      "- `<description>` — Description, optionally quoted if it contains spaces.",
-      "- `<amount>` — Positive amount.",
-      "- `<daily|weekly|monthly|yearly>` — Frequency.",
-      "- `<day>` — For monthly items, an optional day from `1` to `31`, or `last`.",
+      "- `<day>` — Optional monthly day from `1` to `31`, or `last`.",
       "",
       "*Examples*",
       "- `/recurring_income paycheck 2500 weekly`",
@@ -276,9 +245,7 @@ module.exports = function registerRecurringHandler(bot, deps) {
     ].join("\n");
   }
 
-  // ---------------------------
-  // /recurring (EXPENSE)
-  // ---------------------------
+  // /recurring
   bot.onText(/^\/recurring(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
     const raw = String(match?.[1] || "").trim();
@@ -400,9 +367,7 @@ module.exports = function registerRecurringHandler(bot, deps) {
     }
   });
 
-  // ---------------------------
-  // /recurring_income (INCOME)
-  // ---------------------------
+  // /recurring_income
   bot.onText(/^\/recurring_income(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
     const raw = String(match?.[1] || "").trim();
@@ -523,9 +488,7 @@ module.exports = function registerRecurringHandler(bot, deps) {
     }
   });
 
-  // ---------------------------
   // /recurring_list
-  // ---------------------------
   bot.onText(/^\/recurring_list(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
     const raw = String(match?.[1] || "").trim();
@@ -607,9 +570,7 @@ module.exports = function registerRecurringHandler(bot, deps) {
     }
   });
 
-  // ---------------------------
-  // /recurring_delete <id|hashPrefix>
-  // ---------------------------
+  // /recurring_delete
   bot.onText(/^\/recurring_delete(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
     const raw = String(match?.[1] || "").trim();
@@ -685,27 +646,85 @@ module.exports = function registerRecurringHandler(bot, deps) {
   });
 };
 
-module.exports.help = {
-  command: "recurring",
-  category: "Recurring",
-  summary: "Add a recurring expense paid from assets:bank to expenses:recurring.",
-  usage: [
-    "/recurring <description> <amount> <daily|weekly|monthly|yearly>",
-    "/recurring <description> <amount> monthly <day>",
-    "/recurring <description> <amount> monthly last"
-  ],
-  args: [
-    { name: "<description>", description: "Description, optionally quoted if it contains spaces." },
-    { name: "<amount>", description: "Positive amount." },
-    { name: "<daily|weekly|monthly|yearly>", description: "Frequency." },
-    { name: "<day>", description: "Optional monthly day from 1 to 31, or `last`." }
-  ],
-  examples: [
-    "/recurring rent 427 monthly 3",
-    "/recurring \"Rent\" 427 monthly last",
-    "/recurring spotify 11.99 monthly"
-  ],
-  notes: [
-    "Related commands: `/recurring_income`, `/recurring_list`, `/recurring_delete`."
-  ]
-};
+module.exports.helpEntries = [
+  {
+    command: "recurring",
+    category: "Recurring",
+    summary: "Add a recurring expense paid from assets:bank to expenses:recurring.",
+    usage: [
+      "/recurring <description> <amount> <daily|weekly|monthly|yearly>",
+      "/recurring <description> <amount> monthly <day>",
+      "/recurring <description> <amount> monthly last"
+    ],
+    args: [
+      { name: "<description>", description: "Description, optionally quoted if it contains spaces." },
+      { name: "<amount>", description: "Positive amount." },
+      { name: "<daily|weekly|monthly|yearly>", description: "Frequency." },
+      { name: "<day>", description: "Optional monthly day from 1 to 31, or `last`." }
+    ],
+    examples: [
+      "/recurring rent 427 monthly 3",
+      "/recurring \"Rent\" 427 monthly last",
+      "/recurring spotify 11.99 monthly"
+    ],
+    notes: [
+      "Expense recurring items credit `assets:bank` and debit `expenses:recurring`."
+    ]
+  },
+  {
+    command: "recurring_income",
+    category: "Recurring",
+    summary: "Add recurring income flowing into assets:bank from income:recurring.",
+    usage: [
+      "/recurring_income <description> <amount> <daily|weekly|monthly|yearly>",
+      "/recurring_income <description> <amount> monthly <day>",
+      "/recurring_income <description> <amount> monthly last"
+    ],
+    args: [
+      { name: "<description>", description: "Description, optionally quoted if it contains spaces." },
+      { name: "<amount>", description: "Positive amount." },
+      { name: "<daily|weekly|monthly|yearly>", description: "Frequency." },
+      { name: "<day>", description: "Optional monthly day from 1 to 31, or `last`." }
+    ],
+    examples: [
+      "/recurring_income paycheck 2500 weekly",
+      "/recurring_income \"Social Security\" 1500 monthly 3",
+      "/recurring_income pension 1200 monthly last"
+    ],
+    notes: [
+      "Income recurring items debit `assets:bank` and credit `income:recurring`."
+    ]
+  },
+  {
+    command: "recurring_list",
+    category: "Recurring",
+    summary: "List saved recurring items.",
+    usage: [
+      "/recurring_list"
+    ],
+    examples: [
+      "/recurring_list"
+    ],
+    notes: [
+      "Shows the next due date and a short hash reference.",
+      "Use `/recurring_delete <id|hash>` to remove an item."
+    ]
+  },
+  {
+    command: "recurring_delete",
+    category: "Recurring",
+    summary: "Delete a recurring item by numeric id or hash prefix.",
+    usage: [
+      "/recurring_delete <id>",
+      "/recurring_delete <hashPrefix>"
+    ],
+    args: [
+      { name: "<id>", description: "Numeric recurring id from `/recurring_list`." },
+      { name: "<hashPrefix>", description: "Leading characters from the recurring hash, usually 3 to 64 hex chars." }
+    ],
+    examples: [
+      "/recurring_delete 3",
+      "/recurring_delete a1b2c3"
+    ]
+  }
+];

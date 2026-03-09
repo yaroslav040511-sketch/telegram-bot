@@ -214,7 +214,7 @@ module.exports = function registerBudgetHandler(bot, deps) {
     }
   });
 
-  // /budget_set food 1200
+  // /budget_set
   bot.onText(/^\/budget_set(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
     const raw = String(match?.[1] || "").trim();
@@ -344,7 +344,7 @@ module.exports = function registerBudgetHandler(bot, deps) {
     }
   });
 
-  // /budget_delete food
+  // /budget_delete
   bot.onText(/^\/budget_delete(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
     const raw = String(match?.[1] || "").trim();
@@ -409,17 +409,65 @@ module.exports = function registerBudgetHandler(bot, deps) {
   });
 };
 
-module.exports.help = {
-  command: "budget",
-  category: "Reporting",
-  summary: "Show budget versus actual spending for expense categories over the last 30 days.",
-  usage: [
-    "/budget"
-  ],
-  examples: [
-    "/budget"
-  ],
-  notes: [
-    "Related commands: `/budget_set`, `/budget_list`, `/budget_delete`."
-  ]
-};
+module.exports.helpEntries = [
+  {
+    command: "budget",
+    category: "Reporting",
+    summary: "Show budget versus actual spending for expense categories over the last 30 days.",
+    usage: [
+      "/budget"
+    ],
+    examples: [
+      "/budget"
+    ],
+    notes: [
+      "Related commands: `/budget_set`, `/budget_list`, `/budget_delete`."
+    ]
+  },
+  {
+    command: "budget_set",
+    category: "Reporting",
+    summary: "Create or update a budget amount for an expense category.",
+    usage: [
+      "/budget_set <category> <amount>"
+    ],
+    args: [
+      { name: "<category>", description: "Expense category, with or without the `expenses:` prefix." },
+      { name: "<amount>", description: "Budget amount. Must be zero or greater." }
+    ],
+    examples: [
+      "/budget_set food 1200",
+      "/budget_set expenses:rent 1800",
+      "/budget_set dining_out 250"
+    ],
+    notes: [
+      "Categories are normalized to `expenses:<category>`."
+    ]
+  },
+  {
+    command: "budget_list",
+    category: "Reporting",
+    summary: "List all saved budget categories and amounts.",
+    usage: [
+      "/budget_list"
+    ],
+    examples: [
+      "/budget_list"
+    ]
+  },
+  {
+    command: "budget_delete",
+    category: "Reporting",
+    summary: "Delete a saved budget category.",
+    usage: [
+      "/budget_delete <category>"
+    ],
+    args: [
+      { name: "<category>", description: "Expense category, with or without the `expenses:` prefix." }
+    ],
+    examples: [
+      "/budget_delete food",
+      "/budget_delete expenses:rent"
+    ]
+  }
+];
