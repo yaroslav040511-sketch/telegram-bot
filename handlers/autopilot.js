@@ -2,7 +2,11 @@
 module.exports = function registerAutopilotHandler(bot, deps) {
   const { db, simulateCashflow, ledgerService, format, finance } = deps;
   const { formatMoney, codeBlock } = format;
-  const { getRecurringMonthlyNet, getDebtRows } = finance;
+  const {
+    getStartingAssets,
+    getRecurringMonthlyNet,
+    getDebtRows
+  } = finance;
 
   function cloneDebts(rows) {
     return rows.map((r) => ({ ...r }));
@@ -208,15 +212,9 @@ module.exports = function registerAutopilotHandler(bot, deps) {
     }
 
     try {
-      const balances = ledgerService.getBalances();
-
-      let bank = 0;
-      let savings = 0;
-
-      for (const b of balances) {
-        if (b.account === "assets:bank") bank = Number(b.balance) || 0;
-        if (b.account === "assets:savings") savings = Number(b.balance) || 0;
-      }
+      const starting = getStartingAssets(ledgerService);
+      const bank = starting.bank;
+      const savings = starting.savings;
 
       const checking = db.prepare(`
         SELECT id

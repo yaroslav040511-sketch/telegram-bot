@@ -2,26 +2,12 @@
 module.exports = function registerEmergencyFundHandler(bot, deps) {
   const { db, ledgerService, format, finance } = deps;
   const { formatMoney, codeBlock } = format;
-  const { futureMonthLabel, getRecurringMonthlyNet } = finance;
-
-  function getBankBalance() {
-    const balances = ledgerService.getBalances();
-    const bank = balances.find((b) => b.account === "assets:bank");
-    return Number(bank?.balance) || 0;
-  }
-
-  function getMonthlyExpenses() {
-    const row = db.prepare(`
-      SELECT IFNULL(SUM(p.amount), 0) as total
-      FROM transactions t
-      JOIN postings p ON p.transaction_id = t.id
-      JOIN accounts a ON a.id = p.account_id
-      WHERE strftime('%Y-%m', t.date) = strftime('%Y-%m', 'now')
-        AND a.type = 'EXPENSES'
-    `).get();
-
-    return Math.abs(Number(row?.total) || 0);
-  }
+  const {
+    futureMonthLabel,
+    getStartingAssets,
+    getRecurringMonthlyNet,
+    getMonthlyExpenses
+  } = finance;
 
   function renderHelp() {
     return [
@@ -73,8 +59,9 @@ module.exports = function registerEmergencyFundHandler(bot, deps) {
         );
       }
 
-      const cash = getBankBalance();
-      const monthlyExpenses = getMonthlyExpenses();
+      const starting = getStartingAssets(ledgerService);
+      const cash = starting.bank;
+      const monthlyExpenses = getMonthlyExpenses(db);
       const recurring = getRecurringMonthlyNet(db);
       const recurringNet = recurring.net;
 

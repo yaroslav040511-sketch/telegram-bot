@@ -1,65 +1,12 @@
 // handlers/focus.js
 module.exports = function registerFocusHandler(bot, deps) {
-  const { db, simulateCashflow, ledgerService, format } = deps;
+  const { db, simulateCashflow, ledgerService, format, finance } = deps;
   const { formatMoney, codeBlock } = format;
-
-  function monthlyMultiplier(freq) {
-    switch ((freq || "").toLowerCase()) {
-      case "daily":
-        return 30;
-      case "weekly":
-        return 4.33;
-      case "monthly":
-        return 1;
-      case "yearly":
-        return 1 / 12;
-      default:
-        return 0;
-    }
-  }
-
-  function getRecurringMonthlyNet() {
-    const rows = db.prepare(`
-      SELECT postings_json, frequency
-      FROM recurring_transactions
-    `).all();
-
-    let income = 0;
-    let bills = 0;
-
-    for (const row of rows) {
-      try {
-        const postings = JSON.parse(row.postings_json);
-        const bankLine = Array.isArray(postings)
-          ? postings.find((p) => p.account === "assets:bank")
-          : null;
-
-        if (!bankLine) continue;
-
-        const amt = Number(bankLine.amount) || 0;
-        const monthly = Math.abs(amt) * monthlyMultiplier(row.frequency);
-
-        if (amt > 0) income += monthly;
-        if (amt < 0) bills += monthly;
-      } catch {
-        // ignore malformed recurring rows
-      }
-    }
-
-    return income - bills;
-  }
-
-  function getDebtRows() {
-    return db.prepare(`
-      SELECT name, balance, apr, minimum
-      FROM debts
-    `).all().map((row) => ({
-      name: String(row.name || ""),
-      balance: Number(row.balance) || 0,
-      apr: Number(row.apr) || 0,
-      minimum: Number(row.minimum) || 0
-    }));
-  }
+  const {
+    getStartingAssets,
+    getRecurringMonthlyNet,
+    getDebtRows
+  } = finance;
 
   function findTargetDebt(debtRows) {
     if (!debtRows.length) return null;
@@ -118,15 +65,9 @@ module.exports = function registerFocusHandler(bot, deps) {
     }
 
     try {
-      const balances = ledgerService.getBalances();
-
-      let bank = 0;
-      let savings = 0;
-
-      for (const balance of balances) {
-        if (balance.account === "assets:bank") bank = Number(balance.balance) || 0;
-        if (balance.account === "assets:savings") savings = Number(balance.balance) || 0;
-      }
+      const starting = getStartingAssets(ledgerService);
+      const bank = starting.bank;
+      const savings = starting.savings;
 
       const checking = db.prepare(`
         SELECT id
@@ -141,10 +82,11 @@ module.exports = function registerFocusHandler(bot, deps) {
       const sim = simulateCashflow(db, bank, checking.id, 30);
       const lowest = Number(sim?.lowestBalance) || 0;
 
-      const debtRows = getDebtRows();
+      const debtRows = getDebtRows(db);
       const targetDebt = findTargetDebt(debtRows);
       const totalDebt = debtRows.reduce((sum, debt) => sum + debt.balance, 0);
-      const monthlyNet = getRecurringMonthlyNet();
+      const recurring = getRecurringMonthlyNet(db);
+      const monthlyNet = recurring.net;
 
       let focus;
       let tip;

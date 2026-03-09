@@ -1,78 +1,12 @@
 // handlers/goal.js
 module.exports = function registerGoalHandler(bot, deps) {
-  const { db, ledgerService, format } = deps;
+  const { db, ledgerService, format, finance } = deps;
   const { formatMoney, codeBlock } = format;
-
-  function monthlyMultiplier(freq) {
-    switch ((freq || "").toLowerCase()) {
-      case "daily":
-        return 30;
-      case "weekly":
-        return 4.33;
-      case "monthly":
-        return 1;
-      case "yearly":
-        return 1 / 12;
-      default:
-        return 0;
-    }
-  }
-
-  function futureMonthLabel(monthsAhead) {
-    const d = new Date();
-    d.setDate(1);
-    d.setMonth(d.getMonth() + monthsAhead);
-    return d.toLocaleString("en-US", { month: "long", year: "numeric" });
-  }
-
-  function getStartingAssets() {
-    const balances = ledgerService.getBalances();
-
-    let bank = 0;
-    let savings = 0;
-
-    for (const b of balances) {
-      if (b.account === "assets:bank") bank = Number(b.balance) || 0;
-      if (b.account === "assets:savings") savings = Number(b.balance) || 0;
-    }
-
-    return {
-      bank,
-      savings,
-      total: bank + savings
-    };
-  }
-
-  function getRecurringMonthlyNet() {
-    const rows = db.prepare(`
-      SELECT postings_json, frequency
-      FROM recurring_transactions
-    `).all();
-
-    let income = 0;
-    let bills = 0;
-
-    for (const r of rows) {
-      try {
-        const postings = JSON.parse(r.postings_json);
-        const bankLine = Array.isArray(postings)
-          ? postings.find((p) => p.account === "assets:bank")
-          : null;
-
-        if (!bankLine) continue;
-
-        const amt = Number(bankLine.amount) || 0;
-        const monthly = Math.abs(amt) * monthlyMultiplier(r.frequency);
-
-        if (amt > 0) income += monthly;
-        if (amt < 0) bills += monthly;
-      } catch {
-        // ignore malformed recurring rows
-      }
-    }
-
-    return income - bills;
-  }
+  const {
+    futureMonthLabel,
+    getStartingAssets,
+    getRecurringMonthlyNet
+  } = finance;
 
   function renderHelp() {
     return [
@@ -165,9 +99,10 @@ module.exports = function registerGoalHandler(bot, deps) {
         );
       }
 
-      const starting = getStartingAssets();
+      const starting = getStartingAssets(ledgerService);
       const assets = starting.total;
-      const recurringNet = getRecurringMonthlyNet();
+      const recurring = getRecurringMonthlyNet(db);
+      const recurringNet = recurring.net;
 
       const alreadyCovered = assets >= target;
       const gap = Math.max(0, target - assets);
