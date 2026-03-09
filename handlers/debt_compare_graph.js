@@ -2,11 +2,12 @@
 const { ChartJSNodeCanvas } = require("chartjs-node-canvas");
 
 module.exports = function registerDebtCompareGraphHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format } = deps;
+  const { formatMoney } = format;
 
   function cloneDebts(rows) {
     return rows.map((r) => ({
-      name: r.name,
+      name: String(r.name || ""),
       balance: Number(r.balance) || 0,
       apr: Number(r.apr) || 0,
       minimum: Number(r.minimum) || 0
@@ -51,7 +52,6 @@ module.exports = function registerDebtCompareGraphHandler(bot, deps) {
     while (activeDebts(debts).length > 0 && months < 1200) {
       months += 1;
 
-      // 1) interest accrual
       for (const d of debts) {
         if (d.balance <= 0.005) continue;
 
@@ -61,7 +61,6 @@ module.exports = function registerDebtCompareGraphHandler(bot, deps) {
         totalInterest += interest;
       }
 
-      // 2) minimums first
       const remaining = activeDebts(debts);
       sortDebts(remaining, mode);
 
@@ -75,7 +74,6 @@ module.exports = function registerDebtCompareGraphHandler(bot, deps) {
         paymentPool -= minPay;
       }
 
-      // 3) extra to target debt(s)
       let targets = activeDebts(debts);
       sortDebts(targets, mode);
 
@@ -89,7 +87,6 @@ module.exports = function registerDebtCompareGraphHandler(bot, deps) {
         sortDebts(targets, mode);
       }
 
-      // cleanup tiny rounding leftovers
       for (const d of debts) {
         if (d.balance < 0.005) d.balance = 0;
       }
@@ -109,13 +106,58 @@ module.exports = function registerDebtCompareGraphHandler(bot, deps) {
     };
   }
 
-  bot.onText(/^\/debt_compare_graph\s+(\d+(\.\d+)?)$/i, async (msg, match) => {
+  function renderHelp() {
+    return [
+      "*\\/debt_compare_graph*",
+      "Generate a comparison graph of snowball versus avalanche debt payoff using the same extra monthly payment.",
+      "",
+      "*Usage*",
+      "- `/debt_compare_graph <extra>`",
+      "",
+      "*Arguments*",
+      "- `<extra>` — Extra monthly payment on top of minimums. Must be zero or greater.",
+      "",
+      "*Examples*",
+      "- `/debt_compare_graph 100`",
+      "- `/debt_compare_graph 250.50`",
+      "",
+      "*Notes*",
+      "- Uses your current debts table.",
+      "- Graph compares remaining debt balance over time for both strategies."
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/debt_compare_graph(?:@\w+)?(?:\s+(.*))?$/i, async (msg, match) => {
     const chatId = msg.chat.id;
-    const extra = Number(match[1]);
+    const raw = String(match?.[1] || "").trim();
+
+    if (!raw || /^(help|--help|-h)$/i.test(raw)) {
+      return sendHelp(chatId);
+    }
 
     try {
+      const extra = Number(raw);
+
       if (!Number.isFinite(extra) || extra < 0) {
-        return bot.sendMessage(chatId, "Usage: /debt_compare_graph <extra>");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Extra payment must be zero or greater.",
+            "",
+            "Usage:",
+            "`/debt_compare_graph <extra>`",
+            "",
+            "Example:",
+            "`/debt_compare_graph 100`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
       const rows = db.prepare(`
@@ -223,14 +265,14 @@ module.exports = function registerDebtCompareGraphHandler(bot, deps) {
       const interestSaved = snowball.totalInterest - avalanche.totalInterest;
 
       let summary = "💳 Debt Compare Graph\n\n";
-      summary += `Extra Payment: $${extra.toFixed(2)} / month\n\n`;
-      summary += `Snowball:  ${snowball.months} months, $${snowball.totalInterest.toFixed(2)} interest\n`;
-      summary += `Avalanche: ${avalanche.months} months, $${avalanche.totalInterest.toFixed(2)} interest\n\n`;
+      summary += `Extra Payment: ${formatMoney(extra)} / month\n\n`;
+      summary += `Snowball:  ${snowball.months} months, ${formatMoney(snowball.totalInterest)} interest\n`;
+      summary += `Avalanche: ${avalanche.months} months, ${formatMoney(avalanche.totalInterest)} interest\n\n`;
 
       if (interestSaved > 0) {
-        summary += `Avalanche saves $${interestSaved.toFixed(2)} in interest.`;
+        summary += `Avalanche saves ${formatMoney(interestSaved)} in interest.`;
       } else if (interestSaved < 0) {
-        summary += `Snowball saves $${Math.abs(interestSaved).toFixed(2)} in interest.`;
+        summary += `Snowball saves ${formatMoney(Math.abs(interestSaved))} in interest.`;
       } else {
         summary += "Both strategies cost the same in interest.";
       }
@@ -241,4 +283,24 @@ module.exports = function registerDebtCompareGraphHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error generating debt compare graph.");
     }
   });
+};
+
+module.exports.help = {
+  command: "debt_compare_graph",
+  category: "Debt",
+  summary: "Generate a comparison graph of snowball versus avalanche debt payoff using the same extra monthly payment.",
+  usage: [
+    "/debt_compare_graph <extra>"
+  ],
+  args: [
+    { name: "<extra>", description: "Extra monthly payment on top of minimums. Must be zero or greater." }
+  ],
+  examples: [
+    "/debt_compare_graph 100",
+    "/debt_compare_graph 250.50"
+  ],
+  notes: [
+    "Uses your current debts table.",
+    "Graph compares remaining debt balance over time for both strategies."
+  ]
 };

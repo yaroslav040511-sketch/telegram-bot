@@ -1,10 +1,11 @@
 // handlers/debt_compare.js
 module.exports = function registerDebtCompareHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format } = deps;
+  const { formatMoney, renderTable, codeBlock } = format;
 
   function cloneDebts(rows) {
     return rows.map((r) => ({
-      name: r.name,
+      name: String(r.name || ""),
       balance: Number(r.balance) || 0,
       apr: Number(r.apr) || 0,
       minimum: Number(r.minimum) || 0,
@@ -49,7 +50,6 @@ module.exports = function registerDebtCompareHandler(bot, deps) {
     while (activeDebts(debts).length > 0 && months < 1200) {
       months += 1;
 
-      // 1) accrue interest
       for (const d of debts) {
         if (d.balance <= 0.005) continue;
 
@@ -60,7 +60,6 @@ module.exports = function registerDebtCompareHandler(bot, deps) {
         totalInterest += interest;
       }
 
-      // 2) pay minimums
       const remaining = activeDebts(debts);
       sortDebts(remaining, mode);
 
@@ -74,7 +73,6 @@ module.exports = function registerDebtCompareHandler(bot, deps) {
         paymentPool -= minPay;
       }
 
-      // 3) apply extra to target debt(s)
       let targets = activeDebts(debts);
       sortDebts(targets, mode);
 
@@ -88,7 +86,6 @@ module.exports = function registerDebtCompareHandler(bot, deps) {
         sortDebts(targets, mode);
       }
 
-      // cleanup tiny negatives/rounding
       for (const d of debts) {
         if (d.balance < 0.005) d.balance = 0;
       }
@@ -107,13 +104,58 @@ module.exports = function registerDebtCompareHandler(bot, deps) {
     };
   }
 
-  bot.onText(/^\/debt_compare\s+(\d+(\.\d+)?)$/i, (msg, match) => {
+  function renderHelp() {
+    return [
+      "*\\/debt_compare*",
+      "Compare snowball and avalanche debt payoff strategies using the same extra monthly payment.",
+      "",
+      "*Usage*",
+      "- `/debt_compare <extra>`",
+      "",
+      "*Arguments*",
+      "- `<extra>` — Extra monthly payment on top of minimums. Must be zero or greater.",
+      "",
+      "*Examples*",
+      "- `/debt_compare 100`",
+      "- `/debt_compare 250.50`",
+      "",
+      "*Notes*",
+      "- Compares payoff time and total interest.",
+      "- Uses your current debts table."
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/debt_compare(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
-    const extra = Number(match[1]);
+    const raw = String(match?.[1] || "").trim();
+
+    if (!raw || /^(help|--help|-h)$/i.test(raw)) {
+      return sendHelp(chatId);
+    }
 
     try {
+      const extra = Number(raw);
+
       if (!Number.isFinite(extra) || extra < 0) {
-        return bot.sendMessage(chatId, "Usage: /debt_compare <extra>");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Extra payment must be zero or greater.",
+            "",
+            "Usage:",
+            "`/debt_compare <extra>`",
+            "",
+            "Example:",
+            "`/debt_compare 100`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
       const rows = db.prepare(`
@@ -133,9 +175,9 @@ module.exports = function registerDebtCompareHandler(bot, deps) {
 
       let winnerText = "";
       if (avalanche.totalInterest < snowball.totalInterest) {
-        winnerText = `Avalanche saves $${interestSaved.toFixed(2)} in interest`;
+        winnerText = `Avalanche saves ${formatMoney(interestSaved)} in interest`;
       } else if (snowball.totalInterest < avalanche.totalInterest) {
-        winnerText = `Snowball saves $${Math.abs(interestSaved).toFixed(2)} in interest`;
+        winnerText = `Snowball saves ${formatMoney(Math.abs(interestSaved))} in interest`;
       } else {
         winnerText = "Both strategies cost the same in interest";
       }
@@ -148,19 +190,25 @@ module.exports = function registerDebtCompareHandler(bot, deps) {
         winnerText += " with the same payoff time.";
       }
 
-      let out = "💳 Debt Compare\n\n";
-      out += "```\n";
-      out += `Extra Payment:   $${extra.toFixed(2)}\n`;
-      out += `Starting Debt:   $${snowball.startingDebt.toFixed(2)}\n`;
-      out += `Min Payments:    $${snowball.totalMinimums.toFixed(2)}\n`;
-      out += `Monthly Budget:  $${snowball.monthlyBudget.toFixed(2)}\n`;
-      out += "\n";
-      out += "Strategy     Months   Interest\n";
-      out += "-------------------------------\n";
-      out += `Snowball     ${String(snowball.months).padStart(6)}   $${snowball.totalInterest.toFixed(2)}\n`;
-      out += `Avalanche    ${String(avalanche.months).padStart(6)}   $${avalanche.totalInterest.toFixed(2)}\n`;
-      out += "```";
-      out += `\n${winnerText}`;
+      const out = [
+        "💳 *Debt Compare*",
+        "",
+        codeBlock([
+          `Extra Payment   ${formatMoney(extra)}`,
+          `Starting Debt   ${formatMoney(snowball.startingDebt)}`,
+          `Min Payments    ${formatMoney(snowball.totalMinimums)}`,
+          `Monthly Budget  ${formatMoney(snowball.monthlyBudget)}`
+        ].join("\n")),
+        renderTable(
+          ["Strategy", "Months", "Interest"],
+          [
+            ["Snowball", String(snowball.months), formatMoney(snowball.totalInterest)],
+            ["Avalanche", String(avalanche.months), formatMoney(avalanche.totalInterest)]
+          ],
+          { aligns: ["left", "right", "right"] }
+        ),
+        winnerText
+      ].join("\n");
 
       return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
@@ -170,4 +218,24 @@ module.exports = function registerDebtCompareHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error comparing debt strategies.");
     }
   });
+};
+
+module.exports.help = {
+  command: "debt_compare",
+  category: "Debt",
+  summary: "Compare snowball and avalanche debt payoff strategies using the same extra monthly payment.",
+  usage: [
+    "/debt_compare <extra>"
+  ],
+  args: [
+    { name: "<extra>", description: "Extra monthly payment on top of minimums. Must be zero or greater." }
+  ],
+  examples: [
+    "/debt_compare 100",
+    "/debt_compare 250.50"
+  ],
+  notes: [
+    "Compares payoff time and total interest.",
+    "Uses your current debts table."
+  ]
 };

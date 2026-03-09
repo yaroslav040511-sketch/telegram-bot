@@ -2,11 +2,12 @@
 const { ChartJSNodeCanvas } = require("chartjs-node-canvas");
 
 module.exports = function registerDebtGraphHandler(bot, deps) {
-  const { db } = deps;
+  const { db, format } = deps;
+  const { formatMoney } = format;
 
   function cloneDebts(rows) {
     return rows.map((r) => ({
-      name: r.name,
+      name: String(r.name || ""),
       balance: Number(r.balance) || 0,
       apr: Number(r.apr) || 0,
       minimum: Number(r.minimum) || 0
@@ -44,9 +45,7 @@ module.exports = function registerDebtGraphHandler(bot, deps) {
     }
 
     const labels = ["Start"];
-    const totals = [
-      debts.reduce((sum, d) => sum + d.balance, 0)
-    ];
+    const totals = [debts.reduce((sum, d) => sum + d.balance, 0)];
 
     let months = 0;
     let totalInterest = 0;
@@ -54,7 +53,6 @@ module.exports = function registerDebtGraphHandler(bot, deps) {
     while (activeDebts(debts).length > 0 && months < 1200) {
       months += 1;
 
-      // 1) interest
       for (const d of debts) {
         if (d.balance <= 0.005) continue;
 
@@ -64,7 +62,6 @@ module.exports = function registerDebtGraphHandler(bot, deps) {
         totalInterest += interest;
       }
 
-      // 2) pay minimums
       const remaining = activeDebts(debts);
       sortDebts(remaining, mode);
 
@@ -78,7 +75,6 @@ module.exports = function registerDebtGraphHandler(bot, deps) {
         paymentPool -= minPay;
       }
 
-      // 3) extra goes to target
       let targets = activeDebts(debts);
       sortDebts(targets, mode);
 
@@ -92,7 +88,6 @@ module.exports = function registerDebtGraphHandler(bot, deps) {
         sortDebts(targets, mode);
       }
 
-      // cleanup tiny rounding leftovers
       for (const d of debts) {
         if (d.balance < 0.005) d.balance = 0;
       }
@@ -116,14 +111,76 @@ module.exports = function registerDebtGraphHandler(bot, deps) {
     };
   }
 
-  bot.onText(/^\/debt_graph\s+(snowball|avalanche)\s+(\d+(\.\d+)?)$/i, async (msg, match) => {
+  function renderHelp() {
+    return [
+      "*\\/debt_graph*",
+      "Generate a debt payoff graph using either snowball or avalanche with an extra monthly payment.",
+      "",
+      "*Usage*",
+      "- `/debt_graph <snowball|avalanche> <extra>`",
+      "",
+      "*Arguments*",
+      "- `<snowball|avalanche>` — Strategy to use.",
+      "- `<extra>` — Extra monthly payment on top of minimums. Must be zero or greater.",
+      "",
+      "*Examples*",
+      "- `/debt_graph snowball 100`",
+      "- `/debt_graph avalanche 250.50`",
+      "",
+      "*Notes*",
+      "- Uses your current debts table.",
+      "- Graph shows remaining debt balance over time."
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/debt_graph(?:@\w+)?(?:\s+(.*))?$/i, async (msg, match) => {
     const chatId = msg.chat.id;
-    const mode = String(match[1] || "").toLowerCase();
-    const extra = Number(match[2]);
+    const raw = String(match?.[1] || "").trim();
+
+    if (!raw || /^(help|--help|-h)$/i.test(raw)) {
+      return sendHelp(chatId);
+    }
 
     try {
+      const parsed = raw.match(/^(snowball|avalanche)\s+(-?\d+(?:\.\d+)?)$/i);
+
+      if (!parsed) {
+        return bot.sendMessage(
+          chatId,
+          [
+            "Missing or invalid arguments for `/debt_graph`.",
+            "",
+            "Usage:",
+            "`/debt_graph <snowball|avalanche> <extra>`",
+            "",
+            "Examples:",
+            "`/debt_graph snowball 100`",
+            "`/debt_graph avalanche 250.50`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
+      }
+
+      const mode = String(parsed[1] || "").toLowerCase();
+      const extra = Number(parsed[2]);
+
       if (!Number.isFinite(extra) || extra < 0) {
-        return bot.sendMessage(chatId, "Usage: /debt_graph <snowball|avalanche> <extra>");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Extra payment must be zero or greater.",
+            "",
+            "Usage:",
+            "`/debt_graph <snowball|avalanche> <extra>`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
       const rows = db.prepare(`
@@ -209,11 +266,14 @@ module.exports = function registerDebtGraphHandler(bot, deps) {
         contentType: "image/png"
       });
 
-      let summary = `💳 Debt Graph (${mode})\n\n`;
-      summary += `Starting Debt: $${result.startingDebt.toFixed(2)}\n`;
-      summary += `Extra Payment: $${extra.toFixed(2)} / month\n`;
-      summary += `Months to Payoff: ${result.months}\n`;
-      summary += `Interest Paid: $${result.totalInterest.toFixed(2)}`;
+      const summary = [
+        `💳 Debt Graph (${mode})`,
+        "",
+        `Starting Debt: ${formatMoney(result.startingDebt)}`,
+        `Extra Payment: ${formatMoney(extra)} / month`,
+        `Months to Payoff: ${result.months}`,
+        `Interest Paid: ${formatMoney(result.totalInterest)}`
+      ].join("\n");
 
       return bot.sendMessage(chatId, summary);
     } catch (err) {
@@ -221,4 +281,25 @@ module.exports = function registerDebtGraphHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error generating debt graph.");
     }
   });
+};
+
+module.exports.help = {
+  command: "debt_graph",
+  category: "Debt",
+  summary: "Generate a debt payoff graph using either snowball or avalanche with an extra monthly payment.",
+  usage: [
+    "/debt_graph <snowball|avalanche> <extra>"
+  ],
+  args: [
+    { name: "<snowball|avalanche>", description: "Strategy to use." },
+    { name: "<extra>", description: "Extra monthly payment on top of minimums. Must be zero or greater." }
+  ],
+  examples: [
+    "/debt_graph snowball 100",
+    "/debt_graph avalanche 250.50"
+  ],
+  notes: [
+    "Uses your current debts table.",
+    "Graph shows remaining debt balance over time."
+  ]
 };

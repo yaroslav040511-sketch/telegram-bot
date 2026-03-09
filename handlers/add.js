@@ -3,18 +3,40 @@ module.exports = function registerAddHandler(bot, deps) {
   const { ledgerService, format } = deps;
   const { formatMoney, codeBlock } = format;
 
-  function usage(chatId) {
-    return bot.sendMessage(chatId, registerAddHandler.helpText(), {
+  function renderHelp() {
+    return [
+      "*\\/add*",
+      "Add a simple expense from `assets:bank` to `expenses:misc`.",
+      "",
+      "*Usage*",
+      "- `/add <description> <amount>`",
+      "",
+      "*Arguments*",
+      "- `<description>` — Expense description, optionally quoted if it contains spaces.",
+      "- `<amount>` — Positive amount.",
+      "",
+      "*Examples*",
+      "- `/add groceries 25`",
+      "- `/add \"pet supplies\" 47.18`",
+      "",
+      "*Notes*",
+      "- Posts to `expenses:misc` by default.",
+      "- Uses today's date."
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
       parse_mode: "Markdown"
     });
   }
 
-  bot.onText(/^\/add(?:@\w+)?(?:\s+(.*))?$/i, async (msg, match) => {
+  bot.onText(/^\/add(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
     const raw = String(match?.[1] || "").trim();
 
     if (!raw || /^(help|--help|-h)$/i.test(raw)) {
-      return usage(chatId);
+      return sendHelp(chatId);
     }
 
     try {
@@ -29,21 +51,24 @@ module.exports = function registerAddHandler(bot, deps) {
             "Usage:",
             "`/add <description> <amount>`",
             "",
-            "Example:",
-            "`/add groceries 25`"
+            "Examples:",
+            "`/add groceries 25`",
+            "`/add \"pet supplies\" 47.18`"
           ].join("\n"),
           { parse_mode: "Markdown" }
         );
       }
 
-      const description = String(parsed[1] || "").trim();
+      const description = String(parsed[1] || "")
+        .trim()
+        .replace(/^["']|["']$/g, "");
       const amount = Number(parsed[2]);
 
       if (!description) {
         return bot.sendMessage(
           chatId,
           [
-            "Missing description for `/add`.",
+            "Description is required.",
             "",
             "Usage:",
             "`/add <description> <amount>`"
@@ -56,28 +81,23 @@ module.exports = function registerAddHandler(bot, deps) {
         return bot.sendMessage(
           chatId,
           [
-            "Amount must be a positive number.",
+            "Amount must be greater than 0.",
             "",
             "Usage:",
-            "`/add <description> <amount>`",
-            "",
-            "Example:",
-            "`/add groceries 25`"
+            "`/add <description> <amount>`"
           ].join("\n"),
           { parse_mode: "Markdown" }
         );
       }
 
-      await Promise.resolve(
-        ledgerService.addTransaction({
-          date: new Date().toISOString().slice(0, 10),
-          description,
-          postings: [
-            { account: "expenses:misc", amount },
-            { account: "assets:bank", amount: -amount }
-          ]
-        })
-      );
+      ledgerService.addTransaction({
+        date: new Date().toISOString().slice(0, 10),
+        description,
+        postings: [
+          { account: "expenses:misc", amount },
+          { account: "assets:bank", amount: -amount }
+        ]
+      });
 
       return bot.sendMessage(
         chatId,
@@ -95,54 +115,28 @@ module.exports = function registerAddHandler(bot, deps) {
       );
     } catch (err) {
       console.error("add error:", err);
-      return bot.sendMessage(
-        chatId,
-        "Error adding expense for `/add`.",
-        { parse_mode: "Markdown" }
-      );
+      return bot.sendMessage(chatId, "Error adding expense.");
     }
   });
 };
 
-registerAddHandler.help = {
+module.exports.help = {
   command: "add",
-  category: "Entry",
+  category: "Transactions",
   summary: "Add a simple expense from assets:bank to expenses:misc.",
   usage: [
     "/add <description> <amount>"
   ],
   args: [
-    { name: "<description>", description: "Expense description. Can contain spaces." },
-    { name: "<amount>", description: "Positive amount. The last token must be the amount." }
+    { name: "<description>", description: "Expense description, optionally quoted if it contains spaces." },
+    { name: "<amount>", description: "Positive amount." }
   ],
   examples: [
     "/add groceries 25",
-    "/add coffee 4.50",
-    "/add taxi home 18.75"
+    "/add \"pet supplies\" 47.18"
   ],
   notes: [
-    "Posts debit to expenses:misc.",
-    "Posts credit to assets:bank.",
-    "Date defaults to today."
+    "Posts to `expenses:misc` by default.",
+    "Uses today's date."
   ]
-};
-
-registerAddHandler.helpText = function helpText() {
-  return [
-    "*\\/add*",
-    "Add a simple expense from assets:bank to expenses:misc.",
-    "",
-    "*Usage*",
-    "- `/add <description> <amount>`",
-    "",
-    "*Examples*",
-    "- `/add groceries 25`",
-    "- `/add coffee 4.50`",
-    "- `/add taxi home 18.75`",
-    "",
-    "*Notes*",
-    "- Posts debit to expenses:misc.",
-    "- Posts credit to assets:bank.",
-    "- Date defaults to today."
-  ].join("\n");
 };
