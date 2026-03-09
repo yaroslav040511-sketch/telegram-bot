@@ -1,18 +1,20 @@
 // handlers/timeline.js
 module.exports = function registerTimelineHandler(bot, deps) {
-  const { db, ledgerService, simulateCashflow } = deps;
-
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
-  }
+  const { db, ledgerService, simulateCashflow, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
   function monthlyMultiplier(freq) {
     switch ((freq || "").toLowerCase()) {
-      case "daily": return 30;
-      case "weekly": return 4.33;
-      case "monthly": return 1;
-      case "yearly": return 1 / 12;
-      default: return 0;
+      case "daily":
+        return 30;
+      case "weekly":
+        return 4.33;
+      case "monthly":
+        return 1;
+      case "yearly":
+        return 1 / 12;
+      default:
+        return 0;
     }
   }
 
@@ -23,17 +25,22 @@ module.exports = function registerTimelineHandler(bot, deps) {
     return d.toLocaleString("en-US", { month: "long", year: "numeric" });
   }
 
-  function getBankBalance() {
+  function getStartingAssets() {
     const balances = ledgerService.getBalances();
-    const bank = balances.find((b) => b.account === "assets:bank");
-    return Number(bank?.balance) || 0;
-  }
 
-  function getSavingsBalance() {
-    const balances = ledgerService.getBalances();
-    return balances
-      .filter((b) => String(b.account).startsWith("assets:") && b.account !== "assets:bank")
-      .reduce((sum, b) => sum + (Number(b.balance) || 0), 0);
+    let bank = 0;
+    let savings = 0;
+
+    for (const b of balances) {
+      if (b.account === "assets:bank") bank = Number(b.balance) || 0;
+      if (b.account === "assets:savings") savings = Number(b.balance) || 0;
+    }
+
+    return {
+      bank,
+      savings,
+      total: bank + savings
+    };
   }
 
   function getRecurringMonthlyNet() {
@@ -59,7 +66,9 @@ module.exports = function registerTimelineHandler(bot, deps) {
 
         if (amt > 0) income += monthly;
         if (amt < 0) bills += monthly;
-      } catch { }
+      } catch {
+        // ignore malformed recurring rows
+      }
     }
 
     return income - bills;
@@ -83,7 +92,7 @@ module.exports = function registerTimelineHandler(bot, deps) {
       SELECT name, balance, apr, minimum
       FROM debts
     `).all().map((r) => ({
-      name: r.name,
+      name: String(r.name || ""),
       balance: Number(r.balance) || 0,
       apr: Number(r.apr) || 0,
       minimum: Number(r.minimum) || 0
@@ -253,6 +262,16 @@ module.exports = function registerTimelineHandler(bot, deps) {
     return results;
   }
 
+  function parseLocalDate(dateStr) {
+    const s = String(dateStr || "").trim();
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    d.setHours(12, 0, 0, 0);
+    return d;
+  }
+
   function findNextIncome() {
     const recurring = db.prepare(`
       SELECT description, postings_json, next_due_date
@@ -269,30 +288,75 @@ module.exports = function registerTimelineHandler(bot, deps) {
           : null;
 
         if (bankLine && Number(bankLine.amount) > 0) {
-          const d = new Date(r.next_due_date);
+          const d = parseLocalDate(r.next_due_date);
+          if (!d) continue;
+
           if (!nextIncome || d < nextIncome.date) {
             nextIncome = {
               date: d,
+              dateText: String(r.next_due_date || ""),
               amount: Number(bankLine.amount) || 0,
-              description: r.description
+              description: String(r.description || "")
             };
           }
         }
-      } catch { }
+      } catch {
+        // ignore malformed recurring rows
+      }
     }
 
     return nextIncome;
   }
 
-  bot.onText(/^\/timeline(@\w+)?$/i, (msg) => {
+  function renderHelp() {
+    return [
+      "*\\/timeline*",
+      "Show a compact financial timeline including current net worth, next income, danger point, debt-free date, FI date, and key wealth milestones.",
+      "",
+      "*Usage*",
+      "- `/timeline`",
+      "",
+      "*Examples*",
+      "- `/timeline`",
+      "",
+      "*Notes*",
+      "- Starting assets include `assets:bank` and `assets:savings`.",
+      "- Danger point is based on the 30-day cashflow simulation for `assets:bank`."
+    ].join("\n");
+  }
+
+  bot.onText(/^\/timeline(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return bot.sendMessage(chatId, renderHelp(), {
+          parse_mode: "Markdown"
+        });
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/timeline` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/timeline`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
-      const bank = getBankBalance();
-      const savings = getSavingsBalance();
+      const starting = getStartingAssets();
+      const bank = starting.bank;
+      const savings = starting.savings;
+      const totalAssets = starting.total;
+
       const debtRows = getDebtRows();
       const totalDebt = debtRows.reduce((sum, d) => sum + d.balance, 0);
-      const netWorthNow = bank + savings - totalDebt;
+      const netWorthNow = totalAssets - totalDebt;
       const monthlyNet = getRecurringMonthlyNet();
 
       const checking = db.prepare(`
@@ -326,7 +390,7 @@ module.exports = function registerTimelineHandler(bot, deps) {
       const annualExpenses = monthlyExpenses * 12;
       const fiTarget = annualExpenses > 0 ? annualExpenses * 25 : 0;
       const fiMonths = simulateFIMonths(
-        bank + savings,
+        totalAssets,
         Math.max(0, monthlyNet),
         7,
         fiTarget
@@ -334,54 +398,51 @@ module.exports = function registerTimelineHandler(bot, deps) {
 
       const wealthTargets = [10000, 25000, 50000, 100000];
       const wealthMap = simulateNetWorthMilestoneMonths(
-        bank + savings,
+        totalAssets,
         monthlyNet,
         debtRows,
         wealthTargets
       );
 
-      let out = "🛣️ Timeline\n\n";
-      out += "```\n";
-      out += `Now:             ${money(netWorthNow)} net worth\n`;
+      const lines = [
+        "🛣️ *Timeline*",
+        "",
+        codeBlock([
+          `Bank Now         ${formatMoney(bank)}`,
+          `Savings Now      ${formatMoney(savings)}`,
+          `Assets Now       ${formatMoney(totalAssets)}`,
+          `Debt Now         ${formatMoney(totalDebt)}`,
+          `Net Worth Now    ${netWorthNow >= 0 ? "+" : "-"}${formatMoney(Math.abs(netWorthNow))}`,
+          nextIncome
+            ? `Next Income      ${formatMoney(nextIncome.amount)} ${nextIncome.dateText}`
+            : `Next Income      unavailable`,
+          lowestEvent
+            ? `Danger Point     ${formatMoney(lowestEvent.balance)} on ${lowestEvent.date}`
+            : `Danger Point     unavailable`,
+          debtRows.length === 0
+            ? `Debt Free        already debt-free`
+            : debtMonths == null
+              ? `Debt Free        >100 years`
+              : `Debt Free        ${futureMonthLabel(debtMonths)}`,
+          fiTarget <= 0 || fiMonths == null
+            ? `FI Date          unavailable`
+            : `FI Date          ${futureMonthLabel(fiMonths)}`,
+          "------------------------------",
+          ...wealthTargets.map((target) => {
+            const months = wealthMap[target];
+            const label = `${formatMoney(target)}:`.padEnd(16);
+            return months == null
+              ? `${label} >200 years`
+              : `${label} ${futureMonthLabel(months)}`;
+          })
+        ].join("\n"))
+      ];
 
-      if (nextIncome) {
-        out += `Next Income:     ${money(nextIncome.amount)} ${nextIncome.date.toISOString().slice(0, 10)}\n`;
+      if (nextIncome?.description) {
+        lines.push(`Next income source: \`${nextIncome.description}\``);
       }
 
-      if (lowestEvent) {
-        out += `Danger Point:    ${money(lowestEvent.balance)} on ${lowestEvent.date}\n`;
-      }
-
-      if (debtRows.length === 0) {
-        out += `Debt Free:       already debt-free\n`;
-      } else if (debtMonths == null) {
-        out += `Debt Free:       >100 years\n`;
-      } else {
-        out += `Debt Free:       ${futureMonthLabel(debtMonths)}\n`;
-      }
-
-      if (fiTarget <= 0 || fiMonths == null) {
-        out += `FI Date:         unavailable\n`;
-      } else {
-        out += `FI Date:         ${futureMonthLabel(fiMonths)}\n`;
-      }
-
-      out += "------------------------------\n";
-
-      for (const target of wealthTargets) {
-        const months = wealthMap[target];
-        const label = `${money(target)}:`.padEnd(18);
-
-        if (months == null) {
-          out += `${label} >200 years\n`;
-        } else {
-          out += `${label} ${futureMonthLabel(months)}\n`;
-        }
-      }
-
-      out += "```";
-
-      return bot.sendMessage(chatId, out, {
+      return bot.sendMessage(chatId, lines.join("\n"), {
         parse_mode: "Markdown"
       });
     } catch (err) {
@@ -389,4 +450,20 @@ module.exports = function registerTimelineHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error generating timeline.");
     }
   });
+};
+
+module.exports.help = {
+  command: "timeline",
+  category: "Forecasting",
+  summary: "Show a compact financial timeline including current net worth, next income, danger point, debt-free date, FI date, and key wealth milestones.",
+  usage: [
+    "/timeline"
+  ],
+  examples: [
+    "/timeline"
+  ],
+  notes: [
+    "Starting assets include `assets:bank` and `assets:savings`.",
+    "Danger point is based on the 30-day cashflow simulation for `assets:bank`."
+  ]
 };

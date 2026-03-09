@@ -1,18 +1,20 @@
 // handlers/rich.js
 module.exports = function registerRichHandler(bot, deps) {
-  const { db, ledgerService } = deps;
-
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
-  }
+  const { db, ledgerService, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
   function monthlyMultiplier(freq) {
     switch ((freq || "").toLowerCase()) {
-      case "daily": return 30;
-      case "weekly": return 4.33;
-      case "monthly": return 1;
-      case "yearly": return 1 / 12;
-      default: return 0;
+      case "daily":
+        return 30;
+      case "weekly":
+        return 4.33;
+      case "monthly":
+        return 1;
+      case "yearly":
+        return 1 / 12;
+      default:
+        return 0;
     }
   }
 
@@ -23,10 +25,22 @@ module.exports = function registerRichHandler(bot, deps) {
     return d.toLocaleString("en-US", { month: "long", year: "numeric" });
   }
 
-  function getBankBalance() {
+  function getStartingAssets() {
     const balances = ledgerService.getBalances();
-    const bank = balances.find((b) => b.account === "assets:bank");
-    return Number(bank?.balance) || 0;
+
+    let bank = 0;
+    let savings = 0;
+
+    for (const b of balances) {
+      if (b.account === "assets:bank") bank = Number(b.balance) || 0;
+      if (b.account === "assets:savings") savings = Number(b.balance) || 0;
+    }
+
+    return {
+      bank,
+      savings,
+      total: bank + savings
+    };
   }
 
   function getRecurringMonthlyNet() {
@@ -52,7 +66,9 @@ module.exports = function registerRichHandler(bot, deps) {
 
         if (amt > 0) income += monthly;
         if (amt < 0) bills += monthly;
-      } catch { }
+      } catch {
+        // ignore malformed recurring rows
+      }
     }
 
     return income - bills;
@@ -63,7 +79,7 @@ module.exports = function registerRichHandler(bot, deps) {
       SELECT name, balance, apr, minimum
       FROM debts
     `).all().map((r) => ({
-      name: r.name,
+      name: String(r.name || ""),
       balance: Number(r.balance) || 0,
       apr: Number(r.apr) || 0,
       minimum: Number(r.minimum) || 0
@@ -107,25 +123,20 @@ module.exports = function registerRichHandler(bot, deps) {
       if (sortedTargets.every((t) => results[t] != null)) break;
 
       months += 1;
-
-      // add recurring monthly surplus/deficit to cash first
       cash += monthlyNet;
 
       if (activeDebts().length > 0) {
-        // accrue interest
         for (const d of debts) {
           if (d.balance <= 0.005) continue;
           const monthlyRate = d.apr / 100 / 12;
           d.balance += d.balance * monthlyRate;
         }
 
-        // you can only pay what you actually have in cash
         let paymentPool = Math.max(0, Math.min(cash, targetDebtBudget));
 
         const remaining = activeDebts();
         sortDebts(remaining);
 
-        // pay minimums first
         for (const d of remaining) {
           if (paymentPool <= 0) break;
           const minPay = Math.min(d.minimum, d.balance, paymentPool);
@@ -134,7 +145,6 @@ module.exports = function registerRichHandler(bot, deps) {
           cash -= minPay;
         }
 
-        // then avalanche extra
         let targetsNow = activeDebts();
         sortDebts(targetsNow);
 
@@ -158,11 +168,47 @@ module.exports = function registerRichHandler(bot, deps) {
     return results;
   }
 
-  bot.onText(/^\/rich(@\w+)?$/i, (msg) => {
+  function renderHelp() {
+    return [
+      "*\\/rich*",
+      "Show projected net worth milestone dates based on current assets, recurring cashflow, and debt payoff.",
+      "",
+      "*Usage*",
+      "- `/rich`",
+      "",
+      "*Examples*",
+      "- `/rich`",
+      "",
+      "*Notes*",
+      "- Starting assets include `assets:bank` and `assets:savings`.",
+      "- Debt is paid down using avalanche logic before larger wealth milestones accelerate."
+    ].join("\n");
+  }
+
+  bot.onText(/^\/rich(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (raw) {
+      if (/^(help|--help|-h)$/i.test(raw)) {
+        return bot.sendMessage(chatId, renderHelp(), { parse_mode: "Markdown" });
+      }
+
+      return bot.sendMessage(
+        chatId,
+        [
+          "The `/rich` command does not take arguments.",
+          "",
+          "Usage:",
+          "`/rich`"
+        ].join("\n"),
+        { parse_mode: "Markdown" }
+      );
+    }
 
     try {
-      const cash = getBankBalance();
+      const starting = getStartingAssets();
+      const cash = starting.total;
       const monthlyNet = getRecurringMonthlyNet();
       const debtRows = getDebtRows();
 
@@ -172,26 +218,26 @@ module.exports = function registerRichHandler(bot, deps) {
       const targets = [50000, 100000, 250000, 500000, 1000000];
       const monthsMap = simulateMilestones(cash, monthlyNet, debtRows, targets);
 
-      let out = "💸 Rich Timeline\n\n";
-      out += "```\n";
-      out += `Cash Now:         ${money(cash)}\n`;
-      out += `Debt Now:         ${money(totalDebt)}\n`;
-      out += `Net Worth Now:    ${netWorthNow >= 0 ? "+" : "-"}${money(Math.abs(netWorthNow))}\n`;
-      out += `Recurring Net:    ${monthlyNet >= 0 ? "+" : "-"}${money(Math.abs(monthlyNet))}/mo\n`;
-      out += "------------------------------\n";
-
-      for (const target of targets) {
-        const months = monthsMap[target];
-        const label = `${money(target)}:`.padEnd(18);
-
-        if (months == null) {
-          out += `${label} >200 years\n`;
-        } else {
-          out += `${label} ${futureMonthLabel(months)}\n`;
-        }
-      }
-
-      out += "```";
+      const lines = [
+        "💸 *Rich Timeline*",
+        "",
+        codeBlock([
+          `Bank Now        ${formatMoney(starting.bank)}`,
+          `Savings Now     ${formatMoney(starting.savings)}`,
+          `Assets Now      ${formatMoney(cash)}`,
+          `Debt Now        ${formatMoney(totalDebt)}`,
+          `Net Worth Now   ${netWorthNow >= 0 ? "+" : "-"}${formatMoney(Math.abs(netWorthNow))}`,
+          `Recurring Net   ${monthlyNet >= 0 ? "+" : "-"}${formatMoney(Math.abs(monthlyNet))}/mo`,
+          "------------------------------",
+          ...targets.map((target) => {
+            const months = monthsMap[target];
+            const label = `${formatMoney(target)}:`.padEnd(16);
+            return months == null
+              ? `${label} >200 years`
+              : `${label} ${futureMonthLabel(months)}`;
+          })
+        ].join("\n"))
+      ];
 
       let summary;
       if (monthsMap[1000000] != null) {
@@ -202,7 +248,9 @@ module.exports = function registerRichHandler(bot, deps) {
         summary = "Your trajectory is positive, but larger wealth milestones are still far out.";
       }
 
-      return bot.sendMessage(chatId, out + "\n" + summary, {
+      lines.push(summary);
+
+      return bot.sendMessage(chatId, lines.join("\n"), {
         parse_mode: "Markdown"
       });
     } catch (err) {
@@ -210,4 +258,20 @@ module.exports = function registerRichHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error generating rich timeline.");
     }
   });
+};
+
+module.exports.help = {
+  command: "rich",
+  category: "Forecasting",
+  summary: "Show projected net worth milestone dates based on current assets, recurring cashflow, and debt payoff.",
+  usage: [
+    "/rich"
+  ],
+  examples: [
+    "/rich"
+  ],
+  notes: [
+    "Starting assets include `assets:bank` and `assets:savings`.",
+    "Debt is paid down using avalanche logic before larger wealth milestones accelerate."
+  ]
 };

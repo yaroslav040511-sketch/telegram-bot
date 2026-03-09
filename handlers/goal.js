@@ -1,18 +1,20 @@
 // handlers/goal.js
 module.exports = function registerGoalHandler(bot, deps) {
-  const { db, ledgerService } = deps;
-
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
-  }
+  const { db, ledgerService, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
   function monthlyMultiplier(freq) {
     switch ((freq || "").toLowerCase()) {
-      case "daily": return 30;
-      case "weekly": return 4.33;
-      case "monthly": return 1;
-      case "yearly": return 1 / 12;
-      default: return 0;
+      case "daily":
+        return 30;
+      case "weekly":
+        return 4.33;
+      case "monthly":
+        return 1;
+      case "yearly":
+        return 1 / 12;
+      default:
+        return 0;
     }
   }
 
@@ -23,10 +25,22 @@ module.exports = function registerGoalHandler(bot, deps) {
     return d.toLocaleString("en-US", { month: "long", year: "numeric" });
   }
 
-  function getBankBalance() {
+  function getStartingAssets() {
     const balances = ledgerService.getBalances();
-    const bank = balances.find((b) => b.account === "assets:bank");
-    return Number(bank?.balance) || 0;
+
+    let bank = 0;
+    let savings = 0;
+
+    for (const b of balances) {
+      if (b.account === "assets:bank") bank = Number(b.balance) || 0;
+      if (b.account === "assets:savings") savings = Number(b.balance) || 0;
+    }
+
+    return {
+      bank,
+      savings,
+      total: bank + savings
+    };
   }
 
   function getRecurringMonthlyNet() {
@@ -52,32 +66,111 @@ module.exports = function registerGoalHandler(bot, deps) {
 
         if (amt > 0) income += monthly;
         if (amt < 0) bills += monthly;
-      } catch { }
+      } catch {
+        // ignore malformed recurring rows
+      }
     }
 
     return income - bills;
   }
 
-  bot.onText(/^\/goal(@\w+)?\s+(.+?)\s+(\d+(\.\d+)?)$/i, (msg, match) => {
+  function renderHelp() {
+    return [
+      "*\\/goal*",
+      "Estimate whether a purchase or savings goal is already funded, and if not, when it may become affordable.",
+      "",
+      "*Usage*",
+      "- `/goal <name> <amount>`",
+      "",
+      "*Arguments*",
+      "- `<name>` — Goal name, optionally quoted if it contains spaces.",
+      "- `<amount>` — Goal amount. Must be greater than 0.",
+      "",
+      "*Examples*",
+      "- `/goal laptop 1200`",
+      "- `/goal \"new couch\" 1800`",
+      "- `/goal vacation 2500`",
+      "",
+      "*Notes*",
+      "- Starting assets include `assets:bank` and `assets:savings`.",
+      "- ETA uses recurring monthly surplus only."
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/goal(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (!raw || /^(help|--help|-h)$/i.test(raw)) {
+      return sendHelp(chatId);
+    }
 
     try {
-      const name = String(match[2] || "").trim().replace(/^["']|["']$/g, "");
-      const target = Number(match[3]);
+      const parsed = raw.match(/^(.+?)\s+(-?\d+(?:\.\d+)?)$/);
+
+      if (!parsed) {
+        return bot.sendMessage(
+          chatId,
+          [
+            "Missing or invalid arguments for `/goal`.",
+            "",
+            "Usage:",
+            "`/goal <name> <amount>`",
+            "",
+            "Examples:",
+            "`/goal laptop 1200`",
+            "`/goal \"new couch\" 1800`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
+      }
+
+      const name = String(parsed[1] || "")
+        .trim()
+        .replace(/^["']|["']$/g, "");
+      const target = Number(parsed[2]);
 
       if (!name) {
-        return bot.sendMessage(chatId, "Usage: /goal <name> <amount>\nExample: /goal laptop 1200");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Goal name is required.",
+            "",
+            "Usage:",
+            "`/goal <name> <amount>`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
       if (!Number.isFinite(target) || target <= 0) {
-        return bot.sendMessage(chatId, "Goal amount must be greater than 0.");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Goal amount must be greater than 0.",
+            "",
+            "Usage:",
+            "`/goal <name> <amount>`",
+            "",
+            "Example:",
+            "`/goal laptop 1200`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
-      const cash = getBankBalance();
+      const starting = getStartingAssets();
+      const assets = starting.total;
       const recurringNet = getRecurringMonthlyNet();
 
-      const alreadyCovered = cash >= target;
-      const gap = Math.max(0, target - cash);
+      const alreadyCovered = assets >= target;
+      const gap = Math.max(0, target - assets);
 
       let etaText = "already funded";
       if (!alreadyCovered) {
@@ -98,16 +191,21 @@ module.exports = function registerGoalHandler(bot, deps) {
         verdict = "⚠️ Goal is not currently reachable from recurring surplus.";
       }
 
-      let out = "🎯 Goal Projection\n\n";
-      out += "```\n";
-      out += `Goal:             ${name}\n`;
-      out += `Target Amount:    ${money(target)}\n`;
-      out += `Cash on Hand:     ${money(cash)}\n`;
-      out += `Recurring Surplus:${recurringNet >= 0 ? "+" : "-"}${money(Math.abs(recurringNet))}\n`;
-      out += `Gap:              ${money(gap)}\n`;
-      out += `ETA:              ${etaText}\n`;
-      out += "```";
-      out += `\n${verdict}`;
+      const out = [
+        "🎯 *Goal Projection*",
+        "",
+        codeBlock([
+          `Goal             ${name}`,
+          `Target Amount    ${formatMoney(target)}`,
+          `Bank Balance     ${formatMoney(starting.bank)}`,
+          `Savings Balance  ${formatMoney(starting.savings)}`,
+          `Assets on Hand   ${formatMoney(assets)}`,
+          `Recurring Net    ${recurringNet >= 0 ? "+" : "-"}${formatMoney(Math.abs(recurringNet))}/mo`,
+          `Gap              ${formatMoney(gap)}`,
+          `ETA              ${etaText}`
+        ].join("\n")),
+        verdict
+      ].join("\n");
 
       return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
@@ -117,4 +215,26 @@ module.exports = function registerGoalHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error calculating goal.");
     }
   });
+};
+
+module.exports.help = {
+  command: "goal",
+  category: "Forecasting",
+  summary: "Estimate whether a purchase or savings goal is already funded, and if not, when it may become affordable.",
+  usage: [
+    "/goal <name> <amount>"
+  ],
+  args: [
+    { name: "<name>", description: "Goal name, optionally quoted if it contains spaces." },
+    { name: "<amount>", description: "Goal amount. Must be greater than 0." }
+  ],
+  examples: [
+    "/goal laptop 1200",
+    "/goal \"new couch\" 1800",
+    "/goal vacation 2500"
+  ],
+  notes: [
+    "Starting assets include `assets:bank` and `assets:savings`.",
+    "ETA uses recurring monthly surplus only."
+  ]
 };

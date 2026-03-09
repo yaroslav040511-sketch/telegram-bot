@@ -2,26 +2,40 @@
 const { ChartJSNodeCanvas } = require("chartjs-node-canvas");
 
 module.exports = function registerMoneyGraphHandler(bot, deps) {
-  const { db, ledgerService } = deps;
-
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
-  }
+  const { db, ledgerService, format } = deps;
+  const { formatMoney } = format;
 
   function monthlyMultiplier(freq) {
     switch ((freq || "").toLowerCase()) {
-      case "daily": return 30;
-      case "weekly": return 4.33;
-      case "monthly": return 1;
-      case "yearly": return 1 / 12;
-      default: return 0;
+      case "daily":
+        return 30;
+      case "weekly":
+        return 4.33;
+      case "monthly":
+        return 1;
+      case "yearly":
+        return 1 / 12;
+      default:
+        return 0;
     }
   }
 
-  function getBankBalance() {
+  function getStartingAssets() {
     const balances = ledgerService.getBalances();
-    const bank = balances.find((b) => b.account === "assets:bank");
-    return Number(bank?.balance) || 0;
+
+    let bank = 0;
+    let savings = 0;
+
+    for (const b of balances) {
+      if (b.account === "assets:bank") bank = Number(b.balance) || 0;
+      if (b.account === "assets:savings") savings = Number(b.balance) || 0;
+    }
+
+    return {
+      bank,
+      savings,
+      total: bank + savings
+    };
   }
 
   function getRecurringMonthlyNet() {
@@ -47,7 +61,9 @@ module.exports = function registerMoneyGraphHandler(bot, deps) {
 
         if (amt > 0) income += monthly;
         if (amt < 0) bills += monthly;
-      } catch { }
+      } catch {
+        // ignore malformed recurring rows
+      }
     }
 
     return income - bills;
@@ -58,7 +74,7 @@ module.exports = function registerMoneyGraphHandler(bot, deps) {
       SELECT name, balance, apr, minimum
       FROM debts
     `).all().map((r) => ({
-      name: r.name,
+      name: String(r.name || ""),
       balance: Number(r.balance) || 0,
       apr: Number(r.apr) || 0,
       minimum: Number(r.minimum) || 0
@@ -161,35 +177,74 @@ module.exports = function registerMoneyGraphHandler(bot, deps) {
     return { series, payoffMonths };
   }
 
-  bot.onText(/^\/money_graph(@\w+)?(?:\s+(\d{1,2}))?$/i, async (msg, match) => {
+  function renderHelp() {
+    return [
+      "*\\/money_graph*",
+      "Generate a graph of projected assets, debt, and net worth over the next few months.",
+      "",
+      "*Usage*",
+      "- `/money_graph`",
+      "- `/money_graph <months>`",
+      "",
+      "*Arguments*",
+      "- `<months>` — Optional horizon from `1` to `60`. Defaults to `12`.",
+      "",
+      "*Examples*",
+      "- `/money_graph`",
+      "- `/money_graph 24`",
+      "",
+      "*Notes*",
+      "- Starting assets include `assets:bank` and `assets:savings`.",
+      "- Debt payoff uses avalanche logic with positive recurring surplus as extra payment."
+    ].join("\n");
+  }
+
+  bot.onText(/^\/money_graph(?:@\w+)?(?:\s+(.*))?$/i, async (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (/^(help|--help|-h)$/i.test(raw)) {
+      return bot.sendMessage(chatId, renderHelp(), {
+        parse_mode: "Markdown"
+      });
+    }
 
     try {
-      const horizon = match[2] ? Number(match[2]) : 12;
+      const horizon = raw ? Number(raw) : 12;
 
       if (!Number.isInteger(horizon) || horizon < 1 || horizon > 60) {
-        return bot.sendMessage(chatId, "Usage: /money_graph [months]\nExample: /money_graph 24");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Usage: `/money_graph [months]`",
+            "Example: `/money_graph 24`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
-      const bankNow = getBankBalance();
+      const starting = getStartingAssets();
+      const assetsNow = starting.total;
       const recurringNet = getRecurringMonthlyNet();
       const debtRows = getDebtRows();
 
       const labels = monthLabels(horizon);
 
-      const bankSeries = [bankNow];
+      const assetSeries = [assetsNow];
       for (let i = 1; i <= horizon; i++) {
-        bankSeries.push(bankNow + recurringNet * i);
+        assetSeries.push(assetsNow + recurringNet * i);
       }
 
       const debtExtra = Math.max(0, recurringNet);
       const debtResult = simulateDebtSeries(debtRows, debtExtra, horizon);
       const debtSeries = debtResult.series;
 
-      const netWorthSeries = bankSeries.map((bank, i) => bank - (Number(debtSeries[i]) || 0));
+      const netWorthSeries = assetSeries.map(
+        (assets, i) => assets - (Number(debtSeries[i]) || 0)
+      );
 
-      const minY = Math.min(...bankSeries, ...debtSeries, ...netWorthSeries);
-      const maxY = Math.max(...bankSeries, ...debtSeries, ...netWorthSeries);
+      const minY = Math.min(...assetSeries, ...debtSeries, ...netWorthSeries);
+      const maxY = Math.max(...assetSeries, ...debtSeries, ...netWorthSeries);
 
       let pad = (maxY - minY) * 0.12;
       if (!Number.isFinite(pad) || pad === 0) {
@@ -208,8 +263,8 @@ module.exports = function registerMoneyGraphHandler(bot, deps) {
           labels,
           datasets: [
             {
-              label: "Bank",
-              data: bankSeries,
+              label: "Assets",
+              data: assetSeries,
               borderWidth: 4,
               tension: 0.25,
               pointRadius: 3,
@@ -285,13 +340,16 @@ module.exports = function registerMoneyGraphHandler(bot, deps) {
 
       const debtNow = debtSeries[0];
       const netWorthNow = netWorthSeries[0];
-      const bankEnd = bankSeries[bankSeries.length - 1];
+      const assetEnd = assetSeries[assetSeries.length - 1];
       const debtEnd = debtSeries[debtSeries.length - 1];
       const netWorthEnd = netWorthSeries[netWorthSeries.length - 1];
 
-      let summary = "💰 Money Graph\n\n";
-      summary += `Now → Bank ${money(bankNow)}, Debt ${money(debtNow)}, Net Worth ${money(netWorthNow)}\n`;
-      summary += `${horizon}m → Bank ${money(bankEnd)}, Debt ${money(debtEnd)}, Net Worth ${money(netWorthEnd)}`;
+      const summary = [
+        "💰 Money Graph",
+        "",
+        `Now → Bank ${formatMoney(starting.bank)}, Savings ${formatMoney(starting.savings)}, Assets ${formatMoney(assetsNow)}, Debt ${formatMoney(debtNow)}, Net Worth ${formatMoney(netWorthNow)}`,
+        `${horizon}m → Assets ${formatMoney(assetEnd)}, Debt ${formatMoney(debtEnd)}, Net Worth ${formatMoney(netWorthEnd)}`
+      ].join("\n");
 
       return bot.sendMessage(chatId, summary);
     } catch (err) {
@@ -299,4 +357,25 @@ module.exports = function registerMoneyGraphHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error generating money graph.");
     }
   });
+};
+
+module.exports.help = {
+  command: "money_graph",
+  category: "Forecasting",
+  summary: "Generate a graph of projected assets, debt, and net worth over the next few months.",
+  usage: [
+    "/money_graph",
+    "/money_graph <months>"
+  ],
+  args: [
+    { name: "<months>", description: "Optional horizon from 1 to 60. Defaults to 12." }
+  ],
+  examples: [
+    "/money_graph",
+    "/money_graph 24"
+  ],
+  notes: [
+    "Starting assets include `assets:bank` and `assets:savings`.",
+    "Debt payoff uses avalanche logic with positive recurring surplus as extra payment."
+  ]
 };

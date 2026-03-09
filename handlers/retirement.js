@@ -1,6 +1,7 @@
+// handlers/retirement.js
 module.exports = function registerRetirementHandler(bot, deps) {
-
-  const { db, ledgerService } = deps;
+  const { db, ledgerService, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
   function yearsMonths(months) {
     const y = Math.floor(months / 12);
@@ -8,28 +9,44 @@ module.exports = function registerRetirementHandler(bot, deps) {
     return { y, m };
   }
 
-  function formatMoney(n) {
-    return `$${Number(n).toFixed(2)}`;
-  }
-
   function monthlyMultiplier(freq) {
     switch ((freq || "").toLowerCase()) {
-      case "daily": return 30;
-      case "weekly": return 4.33;
-      case "monthly": return 1;
-      case "yearly": return 1 / 12;
-      default: return 0;
+      case "daily":
+        return 30;
+      case "weekly":
+        return 4.33;
+      case "monthly":
+        return 1;
+      case "yearly":
+        return 1 / 12;
+      default:
+        return 0;
     }
   }
 
-  function getBankBalance() {
+  function getStartingInvestableBalance() {
     const balances = ledgerService.getBalances();
-    const bank = balances.find(b => b.account === "assets:bank");
-    return Number(bank?.balance) || 0;
+
+    let bank = 0;
+    let savings = 0;
+
+    for (const balance of balances) {
+      if (balance.account === "assets:bank") {
+        bank = Number(balance.balance) || 0;
+      }
+      if (balance.account === "assets:savings") {
+        savings = Number(balance.balance) || 0;
+      }
+    }
+
+    return {
+      bank,
+      savings,
+      total: bank + savings
+    };
   }
 
   function getRecurringMonthlyNet() {
-
     const rows = db.prepare(`
       SELECT postings_json, frequency
       FROM recurring_transactions
@@ -38,46 +55,43 @@ module.exports = function registerRetirementHandler(bot, deps) {
     let income = 0;
     let bills = 0;
 
-    for (const r of rows) {
-
+    for (const row of rows) {
       try {
-
-        const postings = JSON.parse(r.postings_json);
-        const bankLine = postings.find(p => p.account === "assets:bank");
+        const postings = JSON.parse(row.postings_json);
+        const bankLine = Array.isArray(postings)
+          ? postings.find((p) => p.account === "assets:bank")
+          : null;
 
         if (!bankLine) continue;
 
-        const amt = Number(bankLine.amount) || 0;
-        const monthly = Math.abs(amt) * monthlyMultiplier(r.frequency);
+        const amount = Number(bankLine.amount) || 0;
+        const monthly = Math.abs(amount) * monthlyMultiplier(row.frequency);
 
-        if (amt > 0) income += monthly;
-        if (amt < 0) bills += monthly;
-
-      } catch { }
+        if (amount > 0) income += monthly;
+        if (amount < 0) bills += monthly;
+      } catch {
+        // ignore malformed recurring rows
+      }
     }
 
     return income - bills;
   }
 
   function simulate(startBalance, monthlySave, annualReturn, target) {
-
     const monthlyRate = annualReturn / 100 / 12;
 
     let balance = startBalance;
     let months = 0;
 
     while (balance < target && months < 1200) {
-
       balance = balance * (1 + monthlyRate) + monthlySave;
-      months++;
-
+      months += 1;
     }
 
     return months;
   }
 
   function targetDate(months) {
-
     const d = new Date();
     d.setMonth(d.getMonth() + months);
 
@@ -87,117 +101,334 @@ module.exports = function registerRetirementHandler(bot, deps) {
     return `${month} ${year}`;
   }
 
-  // ---------------------------------------------------
+  function sendMarkdown(chatId, text) {
+    return bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
+  }
+
+  function isHelpArg(raw) {
+    return /^(help|--help|-h)$/i.test(String(raw || "").trim());
+  }
+
+  function renderRetirementHelp() {
+    return [
+      "*\\/retirement*",
+      "Project how long it will take to reach an investment target using a manual monthly contribution.",
+      "",
+      "*Usage*",
+      "- `/retirement <monthlySave> <annualReturn> <target>`",
+      "",
+      "*Arguments*",
+      "- `<monthlySave>` — Monthly investment amount. Must be greater than 0.",
+      "- `<annualReturn>` — Expected annual return percentage, such as `7`.",
+      "- `<target>` — Goal amount you want to reach.",
+      "",
+      "*Examples*",
+      "- `/retirement 500 7 500000`",
+      "- `/retirement 1200 8 1000000`",
+      "",
+      "*Notes*",
+      "- Starting balance includes `assets:bank` and `assets:savings`.",
+      "- Projection uses monthly compounding."
+    ].join("\n");
+  }
+
+  function renderRetirementAutoHelp() {
+    return [
+      "*\\/retirement_auto*",
+      "Project how long it will take to reach an investment target using your recurring monthly surplus automatically.",
+      "",
+      "*Usage*",
+      "- `/retirement_auto <annualReturn> <target>`",
+      "",
+      "*Arguments*",
+      "- `<annualReturn>` — Expected annual return percentage, such as `7`.",
+      "- `<target>` — Goal amount you want to reach.",
+      "",
+      "*Examples*",
+      "- `/retirement_auto 7 500000`",
+      "- `/retirement_auto 8 1000000`",
+      "",
+      "*Notes*",
+      "- Starting balance includes `assets:bank` and `assets:savings`.",
+      "- Monthly surplus is derived from recurring cashflow."
+    ].join("\n");
+  }
+
   // /retirement
-  // ---------------------------------------------------
+  bot.onText(/^\/retirement(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
+    const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
 
-  bot.onText(
-    /^\/retirement(@\w+)?\s+(\d+(\.\d+)?)\s+(\d+(\.\d+)?)\s+(\d+(\.\d+)?)$/i,
-    (msg, match) => {
+    if (!raw || isHelpArg(raw)) {
+      return sendMarkdown(chatId, renderRetirementHelp());
+    }
 
-      const chatId = msg.chat.id;
+    try {
+      const parsed = raw.match(/^(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$/);
 
-      try {
-
-        const monthlySave = Number(match[2]);
-        const annualReturn = Number(match[4]);
-        const target = Number(match[6]);
-
-        if (monthlySave <= 0) {
-          return bot.sendMessage(chatId, "Monthly savings must be > 0.");
-        }
-
-        const startBalance = getBankBalance();
-
-        const months = simulate(startBalance, monthlySave, annualReturn, target);
-        const { y, m } = yearsMonths(months);
-
-        const date = targetDate(months);
-
-        let out = "🏖️ Retirement Projection\n\n";
-
-        out += "```\n";
-        out += `Starting Balance:   ${formatMoney(startBalance)}\n`;
-        out += `Monthly Investment: ${formatMoney(monthlySave)}\n`;
-        out += `Annual Return:      ${annualReturn}%\n`;
-        out += `Target:             ${formatMoney(target)}\n`;
-        out += "-----------------------------------\n";
-        out += `Time to Goal:       ${y}y ${m}m\n`;
-        out += `Target Date:        ${date}\n`;
-        out += "```";
-
-        return bot.sendMessage(chatId, out, {
-          parse_mode: "Markdown"
-        });
-
-      } catch (err) {
-
-        console.error("retirement error:", err);
-
-        return bot.sendMessage(
+      if (!parsed) {
+        return sendMarkdown(
           chatId,
-          "Error calculating retirement."
+          [
+            "Missing or invalid arguments for `/retirement`.",
+            "",
+            "Usage:",
+            "`/retirement <monthlySave> <annualReturn> <target>`",
+            "",
+            "Example:",
+            "`/retirement 500 7 500000`"
+          ].join("\n")
         );
       }
-    }
-  );
 
-  // ---------------------------------------------------
+      const monthlySave = Number(parsed[1]);
+      const annualReturn = Number(parsed[2]);
+      const target = Number(parsed[3]);
+
+      if (!Number.isFinite(monthlySave) || monthlySave <= 0) {
+        return sendMarkdown(
+          chatId,
+          [
+            "Monthly savings must be greater than 0.",
+            "",
+            "Usage:",
+            "`/retirement <monthlySave> <annualReturn> <target>`"
+          ].join("\n")
+        );
+      }
+
+      if (!Number.isFinite(annualReturn) || annualReturn < 0) {
+        return sendMarkdown(
+          chatId,
+          [
+            "Annual return must be zero or greater.",
+            "",
+            "Usage:",
+            "`/retirement <monthlySave> <annualReturn> <target>`"
+          ].join("\n")
+        );
+      }
+
+      if (!Number.isFinite(target) || target <= 0) {
+        return sendMarkdown(
+          chatId,
+          [
+            "Target must be greater than 0.",
+            "",
+            "Usage:",
+            "`/retirement <monthlySave> <annualReturn> <target>`"
+          ].join("\n")
+        );
+      }
+
+      const starting = getStartingInvestableBalance();
+      const startBalance = starting.total;
+
+      if (startBalance >= target) {
+        return sendMarkdown(
+          chatId,
+          [
+            "🏖️ *Retirement Projection*",
+            "",
+            codeBlock([
+              `Bank Balance       ${formatMoney(starting.bank)}`,
+              `Savings Balance    ${formatMoney(starting.savings)}`,
+              `Starting Total     ${formatMoney(startBalance)}`,
+              `Monthly Investment ${formatMoney(monthlySave)}`,
+              `Annual Return      ${annualReturn}%`,
+              `Target             ${formatMoney(target)}`,
+              `Time to Goal       0y 0m`,
+              `Target Date        already reached`
+            ].join("\n"))
+          ].join("\n")
+        );
+      }
+
+      const months = simulate(startBalance, monthlySave, annualReturn, target);
+      const { y, m } = yearsMonths(months);
+      const date = targetDate(months);
+
+      return sendMarkdown(
+        chatId,
+        [
+          "🏖️ *Retirement Projection*",
+          "",
+          codeBlock([
+            `Bank Balance       ${formatMoney(starting.bank)}`,
+            `Savings Balance    ${formatMoney(starting.savings)}`,
+            `Starting Total     ${formatMoney(startBalance)}`,
+            `Monthly Investment ${formatMoney(monthlySave)}`,
+            `Annual Return      ${annualReturn}%`,
+            `Target             ${formatMoney(target)}`,
+            `Time to Goal       ${y}y ${m}m`,
+            `Target Date        ${date}`
+          ].join("\n"))
+        ].join("\n")
+      );
+    } catch (err) {
+      console.error("retirement error:", err);
+      return bot.sendMessage(chatId, "Error calculating retirement.");
+    }
+  });
+
   // /retirement_auto
-  // ---------------------------------------------------
+  bot.onText(/^\/retirement_auto(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
+    const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
 
-  bot.onText(
-    /^\/retirement_auto(@\w+)?\s+(\d+(\.\d+)?)\s+(\d+(\.\d+)?)$/i,
-    (msg, match) => {
+    if (!raw || isHelpArg(raw)) {
+      return sendMarkdown(chatId, renderRetirementAutoHelp());
+    }
 
-      const chatId = msg.chat.id;
+    try {
+      const parsed = raw.match(/^(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$/);
 
-      try {
-
-        const annualReturn = Number(match[2]);
-        const target = Number(match[4]);
-
-        const startBalance = getBankBalance();
-        const monthlySave = getRecurringMonthlyNet();
-
-        if (monthlySave <= 0) {
-          return bot.sendMessage(
-            chatId,
-            "Recurring surplus is not positive, cannot auto-invest."
-          );
-        }
-
-        const months = simulate(startBalance, monthlySave, annualReturn, target);
-        const { y, m } = yearsMonths(months);
-
-        const date = targetDate(months);
-
-        let out = "🏖️ Retirement Projection (Auto)\n\n";
-
-        out += "```\n";
-        out += `Starting Balance:   ${formatMoney(startBalance)}\n`;
-        out += `Monthly Surplus:    ${formatMoney(monthlySave)}\n`;
-        out += `Annual Return:      ${annualReturn}%\n`;
-        out += `Target:             ${formatMoney(target)}\n`;
-        out += "-----------------------------------\n";
-        out += `Time to Goal:       ${y}y ${m}m\n`;
-        out += `Target Date:        ${date}\n`;
-        out += "```";
-
-        return bot.sendMessage(chatId, out, {
-          parse_mode: "Markdown"
-        });
-
-      } catch (err) {
-
-        console.error("retirement_auto error:", err);
-
-        return bot.sendMessage(
+      if (!parsed) {
+        return sendMarkdown(
           chatId,
-          "Error calculating retirement_auto."
+          [
+            "Missing or invalid arguments for `/retirement_auto`.",
+            "",
+            "Usage:",
+            "`/retirement_auto <annualReturn> <target>`",
+            "",
+            "Example:",
+            "`/retirement_auto 7 500000`"
+          ].join("\n")
         );
       }
-    }
-  );
 
+      const annualReturn = Number(parsed[1]);
+      const target = Number(parsed[2]);
+
+      if (!Number.isFinite(annualReturn) || annualReturn < 0) {
+        return sendMarkdown(
+          chatId,
+          [
+            "Annual return must be zero or greater.",
+            "",
+            "Usage:",
+            "`/retirement_auto <annualReturn> <target>`"
+          ].join("\n")
+        );
+      }
+
+      if (!Number.isFinite(target) || target <= 0) {
+        return sendMarkdown(
+          chatId,
+          [
+            "Target must be greater than 0.",
+            "",
+            "Usage:",
+            "`/retirement_auto <annualReturn> <target>`"
+          ].join("\n")
+        );
+      }
+
+      const starting = getStartingInvestableBalance();
+      const startBalance = starting.total;
+      const monthlySave = getRecurringMonthlyNet();
+
+      if (monthlySave <= 0) {
+        return sendMarkdown(
+          chatId,
+          [
+            "Recurring surplus is not positive, so auto-investing cannot be projected.",
+            "",
+            "Usage:",
+            "`/retirement_auto <annualReturn> <target>`"
+          ].join("\n")
+        );
+      }
+
+      if (startBalance >= target) {
+        return sendMarkdown(
+          chatId,
+          [
+            "🏖️ *Retirement Projection (Auto)*",
+            "",
+            codeBlock([
+              `Bank Balance       ${formatMoney(starting.bank)}`,
+              `Savings Balance    ${formatMoney(starting.savings)}`,
+              `Starting Total     ${formatMoney(startBalance)}`,
+              `Monthly Surplus    ${formatMoney(monthlySave)}`,
+              `Annual Return      ${annualReturn}%`,
+              `Target             ${formatMoney(target)}`,
+              `Time to Goal       0y 0m`,
+              `Target Date        already reached`
+            ].join("\n"))
+          ].join("\n")
+        );
+      }
+
+      const months = simulate(startBalance, monthlySave, annualReturn, target);
+      const { y, m } = yearsMonths(months);
+      const date = targetDate(months);
+
+      return sendMarkdown(
+        chatId,
+        [
+          "🏖️ *Retirement Projection (Auto)*",
+          "",
+          codeBlock([
+            `Bank Balance       ${formatMoney(starting.bank)}`,
+            `Savings Balance    ${formatMoney(starting.savings)}`,
+            `Starting Total     ${formatMoney(startBalance)}`,
+            `Monthly Surplus    ${formatMoney(monthlySave)}`,
+            `Annual Return      ${annualReturn}%`,
+            `Target             ${formatMoney(target)}`,
+            `Time to Goal       ${y}y ${m}m`,
+            `Target Date        ${date}`
+          ].join("\n"))
+        ].join("\n")
+      );
+    } catch (err) {
+      console.error("retirement_auto error:", err);
+      return bot.sendMessage(chatId, "Error calculating retirement_auto.");
+    }
+  });
 };
+
+module.exports.helpEntries = [
+  {
+    command: "retirement",
+    category: "Forecasting",
+    summary: "Project how long it will take to reach an investment target using a manual monthly contribution.",
+    usage: [
+      "/retirement <monthlySave> <annualReturn> <target>"
+    ],
+    args: [
+      { name: "<monthlySave>", description: "Monthly investment amount. Must be greater than 0." },
+      { name: "<annualReturn>", description: "Expected annual return percentage, such as `7`." },
+      { name: "<target>", description: "Goal amount you want to reach." }
+    ],
+    examples: [
+      "/retirement 500 7 500000",
+      "/retirement 1200 8 1000000"
+    ],
+    notes: [
+      "Starting balance includes `assets:bank` and `assets:savings`.",
+      "Projection uses monthly compounding."
+    ]
+  },
+  {
+    command: "retirement_auto",
+    category: "Forecasting",
+    summary: "Project how long it will take to reach an investment target using your recurring monthly surplus automatically.",
+    usage: [
+      "/retirement_auto <annualReturn> <target>"
+    ],
+    args: [
+      { name: "<annualReturn>", description: "Expected annual return percentage, such as `7`." },
+      { name: "<target>", description: "Goal amount you want to reach." }
+    ],
+    examples: [
+      "/retirement_auto 7 500000",
+      "/retirement_auto 8 1000000"
+    ],
+    notes: [
+      "Starting balance includes `assets:bank` and `assets:savings`.",
+      "Monthly surplus is derived from recurring cashflow."
+    ]
+  }
+];

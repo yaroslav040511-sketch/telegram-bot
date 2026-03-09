@@ -2,26 +2,40 @@
 const { ChartJSNodeCanvas } = require("chartjs-node-canvas");
 
 module.exports = function registerFutureHandler(bot, deps) {
-  const { db, ledgerService } = deps;
-
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
-  }
+  const { db, ledgerService, format } = deps;
+  const { formatMoney } = format;
 
   function monthlyMultiplier(freq) {
     switch ((freq || "").toLowerCase()) {
-      case "daily": return 30;
-      case "weekly": return 4.33;
-      case "monthly": return 1;
-      case "yearly": return 1 / 12;
-      default: return 0;
+      case "daily":
+        return 30;
+      case "weekly":
+        return 4.33;
+      case "monthly":
+        return 1;
+      case "yearly":
+        return 1 / 12;
+      default:
+        return 0;
     }
   }
 
-  function getBankBalance() {
+  function getStartingAssets() {
     const balances = ledgerService.getBalances();
-    const bank = balances.find((b) => b.account === "assets:bank");
-    return Number(bank?.balance) || 0;
+
+    let bank = 0;
+    let savings = 0;
+
+    for (const b of balances) {
+      if (b.account === "assets:bank") bank = Number(b.balance) || 0;
+      if (b.account === "assets:savings") savings = Number(b.balance) || 0;
+    }
+
+    return {
+      bank,
+      savings,
+      total: bank + savings
+    };
   }
 
   function getRecurringMonthlyNet() {
@@ -47,7 +61,9 @@ module.exports = function registerFutureHandler(bot, deps) {
 
         if (amt > 0) income += monthly;
         if (amt < 0) bills += monthly;
-      } catch { }
+      } catch {
+        // ignore malformed recurring rows
+      }
     }
 
     return {
@@ -75,7 +91,7 @@ module.exports = function registerFutureHandler(bot, deps) {
       SELECT name, balance, apr, minimum
       FROM debts
     `).all().map((r) => ({
-      name: r.name,
+      name: String(r.name || ""),
       balance: Number(r.balance) || 0,
       apr: Number(r.apr) || 0,
       minimum: Number(r.minimum) || 0
@@ -209,26 +225,61 @@ module.exports = function registerFutureHandler(bot, deps) {
     return months >= 1200 ? null : months;
   }
 
-  bot.onText(/^\/(future|life_projection_graph)(?:@\w+)?(?:\s+(\d{1,2}))?$/i, async (msg, match) => {
+  function renderHelp() {
+    return [
+      "*\\/future*",
+      "Generate a forward-looking graph of cash, debt, and net worth over the next few months.",
+      "",
+      "*Usage*",
+      "- `/future`",
+      "- `/future <months>`",
+      "",
+      "*Arguments*",
+      "- `<months>` — Optional horizon from `1` to `60`. Defaults to `12`.",
+      "",
+      "*Examples*",
+      "- `/future`",
+      "- `/future 24`",
+      "",
+      "*Notes*",
+      "- Starting assets include `assets:bank` and `assets:savings`.",
+      "- Alias command: `/life_projection_graph`."
+    ].join("\n");
+  }
+
+  bot.onText(/^\/(future|life_projection_graph)(?:@\w+)?(?:\s+(.*))?$/i, async (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[2] || "").trim();
+
+    if (/^(help|--help|-h)$/i.test(raw)) {
+      return bot.sendMessage(chatId, renderHelp(), { parse_mode: "Markdown" });
+    }
 
     try {
-      const horizon = match[2] ? Number(match[2]) : 12;
+      const horizon = raw ? Number(raw) : 12;
 
       if (!Number.isInteger(horizon) || horizon < 1 || horizon > 60) {
-        return bot.sendMessage(chatId, "Usage: /future [months]\nExample: /future 24");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Usage: `/future [months]`",
+            "Example: `/future 24`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
-      const bankBalance = getBankBalance();
+      const starting = getStartingAssets();
+      const startingAssets = starting.total;
       const recurring = getRecurringMonthlyNet();
       const debtRows = getDebtRows();
       const monthlyExpenses = getMonthlyExpenses();
 
       const labels = monthLabels(horizon);
 
-      const cashSeries = [bankBalance];
+      const cashSeries = [startingAssets];
       for (let i = 1; i <= horizon; i++) {
-        cashSeries.push(bankBalance + recurring.net * i);
+        cashSeries.push(startingAssets + recurring.net * i);
       }
 
       const debtExtra = Math.max(0, recurring.net);
@@ -252,7 +303,7 @@ module.exports = function registerFutureHandler(bot, deps) {
       const annualExpenses = monthlyExpenses * 12;
       const fiTarget = annualExpenses > 0 ? annualExpenses * 25 : 0;
       const fiMonths = simulateFIMonths(
-        bankBalance,
+        startingAssets,
         Math.max(0, recurring.net),
         7,
         fiTarget
@@ -292,7 +343,7 @@ module.exports = function registerFutureHandler(bot, deps) {
           labels,
           datasets: [
             {
-              label: "Cash Projection",
+              label: "Assets Projection",
               data: cashSeries,
               borderWidth: 4,
               tension: 0.25,
@@ -403,14 +454,19 @@ module.exports = function registerFutureHandler(bot, deps) {
 
       const finalNetWorth = netWorthSeries[netWorthSeries.length - 1];
 
-      let summary = "🔮 Financial Future\n\n";
-      summary += `Horizon: ${horizon} month(s)\n`;
-      summary += `Cash Now: ${money(bankBalance)}\n`;
-      summary += `Recurring Net: ${recurring.net >= 0 ? "+" : "-"}${money(Math.abs(recurring.net))} / month\n`;
-      summary += `${horizon}-Month Cash: ${money(cashSeries[cashSeries.length - 1])}\n`;
-      summary += `${horizon}-Month Net Worth: ${money(finalNetWorth)}\n`;
-      summary += `${debtPayoffText}\n`;
-      summary += `${fiText}`;
+      const summary = [
+        "🔮 Financial Future",
+        "",
+        `Horizon: ${horizon} month(s)`,
+        `Bank Now: ${formatMoney(starting.bank)}`,
+        `Savings Now: ${formatMoney(starting.savings)}`,
+        `Assets Now: ${formatMoney(startingAssets)}`,
+        `Recurring Net: ${recurring.net >= 0 ? "+" : "-"}${formatMoney(Math.abs(recurring.net))} / month`,
+        `${horizon}-Month Assets: ${formatMoney(cashSeries[cashSeries.length - 1])}`,
+        `${horizon}-Month Net Worth: ${formatMoney(finalNetWorth)}`,
+        debtPayoffText,
+        fiText
+      ].join("\n");
 
       return bot.sendMessage(chatId, summary);
     } catch (err) {
@@ -418,4 +474,28 @@ module.exports = function registerFutureHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error generating future graph.");
     }
   });
+};
+
+module.exports.help = {
+  command: "future",
+  aliases: ["life_projection_graph"],
+  category: "Forecasting",
+  summary: "Generate a forward-looking graph of assets, debt, and net worth over the next few months.",
+  usage: [
+    "/future",
+    "/future <months>",
+    "/life_projection_graph",
+    "/life_projection_graph <months>"
+  ],
+  args: [
+    { name: "<months>", description: "Optional horizon from 1 to 60. Defaults to 12." }
+  ],
+  examples: [
+    "/future",
+    "/future 24",
+    "/life_projection_graph 18"
+  ],
+  notes: [
+    "Starting assets include `assets:bank` and `assets:savings`."
+  ]
 };

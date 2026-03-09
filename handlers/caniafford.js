@@ -1,19 +1,61 @@
 // handlers/caniafford.js
 module.exports = function registerCanIAffordHandler(bot, deps) {
-  const { db, simulateCashflow } = deps;
+  const { db, simulateCashflow, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
+  function renderHelp() {
+    return [
+      "*\\/caniafford*",
+      "Estimate whether a purchase is safe based on your current bank balance and 30-day cashflow projection.",
+      "",
+      "*Usage*",
+      "- `/caniafford <amount>`",
+      "",
+      "*Arguments*",
+      "- `<amount>` — Purchase amount. Must be greater than 0.",
+      "",
+      "*Examples*",
+      "- `/caniafford 50`",
+      "- `/caniafford 299.99`",
+      "- `/caniafford 1200`",
+      "",
+      "*Notes*",
+      "- Uses `assets:bank` only, because this is a liquidity check.",
+      "- Compares your projected 30-day minimum balance before and after the purchase."
+    ].join("\n");
   }
 
-  bot.onText(/^\/caniafford(@\w+)?\s+(\d+(\.\d+)?)$/i, (msg, match) => {
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/caniafford(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (!raw || /^(help|--help|-h)$/i.test(raw)) {
+      return sendHelp(chatId);
+    }
 
     try {
-      const amount = Number(match[2]);
+      const amount = Number(raw);
 
       if (!Number.isFinite(amount) || amount <= 0) {
-        return bot.sendMessage(chatId, "Usage: /caniafford <amount>");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Purchase amount must be greater than 0.",
+            "",
+            "Usage:",
+            "`/caniafford <amount>`",
+            "",
+            "Example:",
+            "`/caniafford 299.99`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
       const checking = db.prepare(`
@@ -23,7 +65,11 @@ module.exports = function registerCanIAffordHandler(bot, deps) {
       `).get();
 
       if (!checking) {
-        return bot.sendMessage(chatId, "Checking account assets:bank not found.");
+        return bot.sendMessage(
+          chatId,
+          "Checking account `assets:bank` not found.",
+          { parse_mode: "Markdown" }
+        );
       }
 
       const row = db.prepare(`
@@ -35,7 +81,9 @@ module.exports = function registerCanIAffordHandler(bot, deps) {
       const currentBalance = Number(row?.balance) || 0;
 
       const baseline = simulateCashflow(db, currentBalance, checking.id, 30);
-      const baselineTimeline = Array.isArray(baseline?.timeline) ? baseline.timeline : [];
+      const baselineTimeline = Array.isArray(baseline?.timeline)
+        ? baseline.timeline
+        : [];
 
       let baselineMin = currentBalance;
       for (const evt of baselineTimeline) {
@@ -45,7 +93,9 @@ module.exports = function registerCanIAffordHandler(bot, deps) {
 
       const startingAfterPurchase = currentBalance - amount;
       const purchaseRun = simulateCashflow(db, startingAfterPurchase, checking.id, 30);
-      const purchaseTimeline = Array.isArray(purchaseRun?.timeline) ? purchaseRun.timeline : [];
+      const purchaseTimeline = Array.isArray(purchaseRun?.timeline)
+        ? purchaseRun.timeline
+        : [];
 
       let projectedMin = startingAfterPurchase;
       let firstNegativeDate = null;
@@ -76,21 +126,22 @@ module.exports = function registerCanIAffordHandler(bot, deps) {
         verdict = "❌ No — this would put your bank balance negative immediately.";
       }
 
-      let out = "🛒 Can I Afford It?\n\n";
-      out += "```\n";
-      out += `Purchase:            ${money(amount)}\n`;
-      out += `Current Balance:     ${money(currentBalance)}\n`;
-      out += `Balance After Buy:   ${money(startingAfterPurchase)}\n`;
-      out += `30d Min (before):    ${money(baselineMin)}\n`;
-      out += `30d Min (after):     ${money(projectedMin)}\n`;
-      out += `Change in 30d Min:   ${deltaMin >= 0 ? "+" : "-"}${money(Math.abs(deltaMin))}\n`;
-      if (firstNegativeDate) {
-        out += `First Negative:      ${firstNegativeDate}\n`;
-      }
-      out += "```";
-      out += `\n${verdict}`;
+      const lines = [
+        "🛒 *Can I Afford It?*",
+        "",
+        codeBlock([
+          `Purchase            ${formatMoney(amount)}`,
+          `Current Balance     ${formatMoney(currentBalance)}`,
+          `Balance After Buy   ${formatMoney(startingAfterPurchase)}`,
+          `30d Min (before)    ${formatMoney(baselineMin)}`,
+          `30d Min (after)     ${formatMoney(projectedMin)}`,
+          `Change in 30d Min   ${deltaMin >= 0 ? "+" : "-"}${formatMoney(Math.abs(deltaMin))}`,
+          ...(firstNegativeDate ? [`First Negative      ${firstNegativeDate}`] : [])
+        ].join("\n")),
+        verdict
+      ];
 
-      return bot.sendMessage(chatId, out, {
+      return bot.sendMessage(chatId, lines.join("\n"), {
         parse_mode: "Markdown"
       });
     } catch (err) {
@@ -98,4 +149,25 @@ module.exports = function registerCanIAffordHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error calculating affordability.");
     }
   });
+};
+
+module.exports.help = {
+  command: "caniafford",
+  category: "Forecasting",
+  summary: "Estimate whether a purchase is safe based on your current bank balance and 30-day cashflow projection.",
+  usage: [
+    "/caniafford <amount>"
+  ],
+  args: [
+    { name: "<amount>", description: "Purchase amount. Must be greater than 0." }
+  ],
+  examples: [
+    "/caniafford 50",
+    "/caniafford 299.99",
+    "/caniafford 1200"
+  ],
+  notes: [
+    "Uses `assets:bank` only, because this is a liquidity check.",
+    "Compares your projected 30-day minimum balance before and after the purchase."
+  ]
 };

@@ -1,25 +1,27 @@
 // handlers/retirement_fi.js
 module.exports = function registerRetirementFIHandler(bot, deps) {
-  const { db, ledgerService } = deps;
-
-  function money(n) {
-    return `$${Number(n || 0).toFixed(2)}`;
-  }
+  const { db, ledgerService, format } = deps;
+  const { formatMoney, codeBlock } = format;
 
   function monthlyMultiplier(freq) {
     switch ((freq || "").toLowerCase()) {
-      case "daily": return 30;
-      case "weekly": return 4.33;
-      case "monthly": return 1;
-      case "yearly": return 1 / 12;
-      default: return 0;
+      case "daily":
+        return 30;
+      case "weekly":
+        return 4.33;
+      case "monthly":
+        return 1;
+      case "yearly":
+        return 1 / 12;
+      default:
+        return 0;
     }
   }
 
-  function yearsMonths(months) {
+  function yearsMonths(totalMonths) {
     return {
-      years: Math.floor(months / 12),
-      months: months % 12
+      years: Math.floor(totalMonths / 12),
+      months: totalMonths % 12
     };
   }
 
@@ -31,10 +33,22 @@ module.exports = function registerRetirementFIHandler(bot, deps) {
     return `${month} ${year}`;
   }
 
-  function getBankBalance() {
+  function getStartingAssets() {
     const balances = ledgerService.getBalances();
-    const bank = balances.find((b) => b.account === "assets:bank");
-    return Number(bank?.balance) || 0;
+
+    let bank = 0;
+    let savings = 0;
+
+    for (const b of balances) {
+      if (b.account === "assets:bank") bank = Number(b.balance) || 0;
+      if (b.account === "assets:savings") savings = Number(b.balance) || 0;
+    }
+
+    return {
+      bank,
+      savings,
+      total: bank + savings
+    };
   }
 
   function getRecurringMonthlyNet() {
@@ -60,16 +74,17 @@ module.exports = function registerRetirementFIHandler(bot, deps) {
 
         if (amt > 0) recurringIncome += monthly;
         if (amt < 0) recurringBills += monthly;
-      } catch { }
+      } catch {
+        // ignore malformed recurring rows
+      }
     }
 
     return recurringIncome - recurringBills;
   }
 
   function getActualMonthlyExpenses() {
-    const rows = db.prepare(`
-      SELECT
-        SUM(p.amount) as total
+    const row = db.prepare(`
+      SELECT SUM(p.amount) as total
       FROM transactions t
       JOIN postings p ON p.transaction_id = t.id
       JOIN accounts a ON a.id = p.account_id
@@ -77,54 +92,110 @@ module.exports = function registerRetirementFIHandler(bot, deps) {
         AND a.type = 'EXPENSES'
     `).get();
 
-    return Math.abs(Number(rows?.total) || 0);
+    return Math.abs(Number(row?.total) || 0);
   }
 
-  bot.onText(/^\/retirement_fi(@\w+)?\s+(\d+(\.\d+)?)$/i, (msg, match) => {
+  function renderHelp() {
+    return [
+      "*\\/retirement_fi*",
+      "Estimate time to financial independence using your current assets, recurring monthly surplus, and this month's actual expenses.",
+      "",
+      "*Usage*",
+      "- `/retirement_fi <annual_return_percent>`",
+      "",
+      "*Arguments*",
+      "- `<annual_return_percent>` — Expected annual return percentage, such as `7`.",
+      "",
+      "*Examples*",
+      "- `/retirement_fi 7`",
+      "- `/retirement_fi 8.5`",
+      "",
+      "*Notes*",
+      "- Starting assets include `assets:bank` and `assets:savings`.",
+      "- FI target uses 25x annual spending.",
+      "- Monthly expenses come from the current month's posted expense transactions."
+    ].join("\n");
+  }
+
+  function sendHelp(chatId) {
+    return bot.sendMessage(chatId, renderHelp(), {
+      parse_mode: "Markdown"
+    });
+  }
+
+  bot.onText(/^\/retirement_fi(?:@\w+)?(?:\s+(.*))?$/i, (msg, match) => {
     const chatId = msg.chat.id;
+    const raw = String(match?.[1] || "").trim();
+
+    if (!raw || /^(help|--help|-h)$/i.test(raw)) {
+      return sendHelp(chatId);
+    }
 
     try {
-      const annualReturn = Number(match[2]);
+      const annualReturn = Number(raw);
 
       if (!Number.isFinite(annualReturn) || annualReturn < 0) {
-        return bot.sendMessage(chatId, "Usage: /retirement_fi <annual_return_percent>");
+        return bot.sendMessage(
+          chatId,
+          [
+            "Annual return must be zero or greater.",
+            "",
+            "Usage:",
+            "`/retirement_fi <annual_return_percent>`",
+            "",
+            "Example:",
+            "`/retirement_fi 7`"
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
-      const startingBalance = getBankBalance();
+      const starting = getStartingAssets();
+      const startingBalance = starting.total;
       const monthlySave = getRecurringMonthlyNet();
       const monthlyExpenses = getActualMonthlyExpenses();
 
       if (monthlyExpenses <= 0) {
         return bot.sendMessage(
           chatId,
-          "This month's expenses are zero or unavailable, so FI target cannot be calculated yet."
+          [
+            "This month's expenses are zero or unavailable, so the FI target cannot be calculated yet."
+          ].join("\n"),
+          { parse_mode: "Markdown" }
         );
       }
 
       if (monthlySave <= 0) {
         return bot.sendMessage(
           chatId,
-          "Recurring surplus is not positive, so FI projection cannot be calculated."
+          [
+            "Recurring surplus is not positive, so the FI projection cannot be calculated."
+          ].join("\n"),
+          { parse_mode: "Markdown" }
         );
       }
 
       const annualExpenses = monthlyExpenses * 12;
-      const fiTarget = annualExpenses * 25; // 4% rule
+      const fiTarget = annualExpenses * 25;
       const monthlyRate = annualReturn / 100 / 12;
 
       if (startingBalance >= fiTarget) {
-        let out = "🔥 Financial Independence\n\n";
-        out += "```\n";
-        out += `Current Balance:    ${money(startingBalance)}\n`;
-        out += `Annual Spending:    ${money(annualExpenses)}\n`;
-        out += `FI Target:          ${money(fiTarget)}\n`;
-        out += "-----------------------------------\n";
-        out += `Status:             Already FI\n`;
-        out += "```";
-
-        return bot.sendMessage(chatId, out, {
-          parse_mode: "Markdown"
-        });
+        return bot.sendMessage(
+          chatId,
+          [
+            "🔥 *Financial Independence*",
+            "",
+            codeBlock([
+              `Bank Balance      ${formatMoney(starting.bank)}`,
+              `Savings Balance   ${formatMoney(starting.savings)}`,
+              `Starting Assets   ${formatMoney(startingBalance)}`,
+              `Annual Spending   ${formatMoney(annualExpenses)}`,
+              `FI Target         ${formatMoney(fiTarget)}`,
+              `Status            Already FI`
+            ].join("\n"))
+          ].join("\n"),
+          { parse_mode: "Markdown" }
+        );
       }
 
       let balance = startingBalance;
@@ -145,18 +216,22 @@ module.exports = function registerRetirementFIHandler(bot, deps) {
       const ym = yearsMonths(months);
       const fiDate = targetDate(months);
 
-      let out = "🔥 Financial Independence\n\n";
-      out += "```\n";
-      out += `Current Balance:    ${money(startingBalance)}\n`;
-      out += `Monthly Surplus:    ${money(monthlySave)}\n`;
-      out += `Monthly Expenses:   ${money(monthlyExpenses)}\n`;
-      out += `Annual Spending:    ${money(annualExpenses)}\n`;
-      out += `FI Target:          ${money(fiTarget)}\n`;
-      out += `Annual Return:      ${annualReturn.toFixed(2)}%\n`;
-      out += "-----------------------------------\n";
-      out += `Time to FI:         ${ym.years}y ${ym.months}m\n`;
-      out += `FI Date:            ${fiDate}\n`;
-      out += "```";
+      const out = [
+        "🔥 *Financial Independence*",
+        "",
+        codeBlock([
+          `Bank Balance      ${formatMoney(starting.bank)}`,
+          `Savings Balance   ${formatMoney(starting.savings)}`,
+          `Starting Assets   ${formatMoney(startingBalance)}`,
+          `Monthly Surplus   ${formatMoney(monthlySave)}`,
+          `Monthly Expenses  ${formatMoney(monthlyExpenses)}`,
+          `Annual Spending   ${formatMoney(annualExpenses)}`,
+          `FI Target         ${formatMoney(fiTarget)}`,
+          `Annual Return     ${annualReturn.toFixed(2)}%`,
+          `Time to FI        ${ym.years}y ${ym.months}m`,
+          `FI Date           ${fiDate}`
+        ].join("\n"))
+      ].join("\n");
 
       return bot.sendMessage(chatId, out, {
         parse_mode: "Markdown"
@@ -166,4 +241,25 @@ module.exports = function registerRetirementFIHandler(bot, deps) {
       return bot.sendMessage(chatId, "Error calculating retirement_fi.");
     }
   });
+};
+
+module.exports.help = {
+  command: "retirement_fi",
+  category: "Forecasting",
+  summary: "Estimate time to financial independence using your current assets, recurring monthly surplus, and this month's actual expenses.",
+  usage: [
+    "/retirement_fi <annual_return_percent>"
+  ],
+  args: [
+    { name: "<annual_return_percent>", description: "Expected annual return percentage, such as 7." }
+  ],
+  examples: [
+    "/retirement_fi 7",
+    "/retirement_fi 8.5"
+  ],
+  notes: [
+    "Starting assets include `assets:bank` and `assets:savings`.",
+    "FI target uses 25x annual spending.",
+    "Monthly expenses come from the current month's posted expense transactions."
+  ]
 };
