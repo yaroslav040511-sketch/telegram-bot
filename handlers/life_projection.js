@@ -1,17 +1,14 @@
 const { yearsMonths } = require("../utils/dates");
 
 module.exports = function registerLifeProjectionHandler(bot, deps) {
-  const { db, ledgerService, finance, debt } = deps;
+  const { db, ledgerService, finance, debt, format } = deps;
+  const { formatMoney } = format;
   const {
     getStartingAssets,
     getRecurringMonthlyNet,
     getDebtRows
   } = finance;
   const { runDebtSimulation } = debt;
-
-  function money(n) {
-    return `$${(Number(n) || 0).toFixed(2)}`;
-  }
 
   function futureDate(monthsAhead) {
     const d = new Date();
@@ -103,12 +100,12 @@ module.exports = function registerLifeProjectionHandler(bot, deps) {
 
       let out = "🧭 Life Projection\n\n";
       out += "```\n";
-      out += `Cash on Hand:      ${money(bankBalance)}\n`;
-      out += `Monthly Net:       ${monthly.net >= 0 ? "+" : "-"}${money(Math.abs(monthly.net))}\n`;
-      out += `Recurring Net:     ${recurring.net >= 0 ? "+" : "-"}${money(Math.abs(recurring.net))}\n`;
-      out += `Debt Total:        ${money(totalDebt)}\n`;
-      out += `Debt Min/Month:    ${money(totalMinimums)}\n`;
-      out += `12mo Projection:   ${money(projected12mo)}\n`;
+      out += `Cash on Hand:      ${formatMoney(bankBalance)}\n`;
+      out += `Monthly Net:       ${monthly.net >= 0 ? "+" : "-"}${formatMoney(Math.abs(monthly.net))}\n`;
+      out += `Recurring Net:     ${recurring.net >= 0 ? "+" : "-"}${formatMoney(Math.abs(recurring.net))}\n`;
+      out += `Debt Total:        ${formatMoney(totalDebt)}\n`;
+      out += `Debt Min/Month:    ${formatMoney(totalMinimums)}\n`;
+      out += `12mo Projection:   ${formatMoney(projected12mo)}\n`;
 
       if (debtPlan.months === null) {
         out += `Debt-Free Date:    >100 years\n`;
@@ -123,12 +120,12 @@ module.exports = function registerLifeProjectionHandler(bot, deps) {
       if (fiTarget <= 0) {
         out += `FI Date:           unavailable\n`;
       } else if (fiMonths === null) {
-        out += `FI Target:         ${money(fiTarget)}\n`;
+        out += `FI Target:         ${formatMoney(fiTarget)}\n`;
         out += `FI Date:           >100 years\n`;
       } else {
         const fiDate = futureDate(fiMonths);
         const ymFi = yearsMonths(fiMonths);
-        out += `FI Target:         ${money(fiTarget)}\n`;
+        out += `FI Target:         ${formatMoney(fiTarget)}\n`;
         out += `FI Date:           ${fiDate} (${ymFi.years}y ${ymFi.months}m)\n`;
       }
 
