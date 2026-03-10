@@ -1,7 +1,7 @@
 <table>
 <tr>
 
-<td width="55%" style="padding-right: 20px; vertical-align: top;">
+<td width="55%" style="padding-right:30px; vertical-align:top;">
 
 ## A Telegram-based personal finance assistant with:
 
@@ -21,13 +21,11 @@
 
 </td>
 
-<td width="45%" align="right">
+<td width="45%" style="vertical-align:top;">
 
-<img src="docs/IMG_0139.PNG" width="100%">
+<img src="docs/IMG_0139.PNG" width="420">
 
 </td>
 
 </tr>
 </table>
-
-
