@@ -124,6 +124,23 @@ module.exports = function registerDebtCompareRangeGraphHandler(bot, deps) {
           }
         }
 
+        const pointCount = Math.floor((end - start) / step) + 1;
+
+        if (pointCount < 2) {
+          return bot.sendMessage(
+            chatId,
+            [
+              "Range graph needs at least two tested payment values.",
+              "",
+              "Try:",
+              "`/debt_compare_range_graph 250 350 50`",
+              "or",
+              "`/debt_compare 300`"
+            ].join("\n"),
+            { parse_mode: "Markdown" }
+          );
+        }
+
         summaries.push({
           extra: normalizedExtra,
           snow,
