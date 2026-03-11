@@ -10,7 +10,7 @@
 ⭐ If you find this project useful, please consider giving it a star ⭐
 </p>
 
-<p>
+<p align="center">
   <img alt="version" src="https://img.shields.io/badge/version-v1.0.0-blue">
   <img alt="node" src="https://img.shields.io/badge/node-18%2B-green">
   <img alt="sqlite" src="https://img.shields.io/badge/database-SQLite-lightgrey">
