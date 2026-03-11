@@ -8,8 +8,7 @@
 
 <p align="center">
 ⭐  If you find this project useful, please consider giving it a star  ⭐
-   It helps others discover the project and supports future development
-</p>
+</p> 
 
 <p align="center">
   <img alt="version" src="https://img.shields.io/badge/version-v1.0.0-blue">
@@ -236,6 +235,10 @@ Status:          ⚠️ Tight</code></pre>
 <li>Better Natural Language transaction detection</li>
 <li>Docker deployment</li>
 </ul>
+
+<p align="center">
+Please star the project, it helps others discover the project and supports future development.
+</p>
 
 <p>
   <a href="HELP.md"><strong>Commands</strong></a>
