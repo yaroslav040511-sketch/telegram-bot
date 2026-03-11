@@ -6,8 +6,8 @@
   parsing to help prevent overdrafts and plan your financial future.
 </p>
 
-<p>
-⭐ If you find this project useful, please consider giving it a star.
+<p align="center">
+⭐ If you find this project useful, please consider giving it a star ⭐
 </p>
 
 <p>
