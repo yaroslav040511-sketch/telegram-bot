@@ -139,7 +139,99 @@ bot.command('test', async (ctx) => {
   }
 });
 
-// СТАТИСТИКА
+// СТАТИСТИКА - ИСПРАВЛЕННАЯ ВЕРСИЯ
+bot.command('stats', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    const text = ctx.message.text;
+    const parts = text.split(' ');
+    
+    console.log(`📊 Stats request from user ${userId}`);
+    
+    // Сначала проверим, есть ли вообще транзакции у пользователя
+    const checkTx = await pool.query(
+      'SELECT COUNT(*) FROM transactions WHERE user_id = $1',
+      [userId]
+    );
+    const totalCount = parseInt(checkTx.rows[0].count);
+    console.log(`📊 Total transactions for user: ${totalCount}`);
+    
+    if (totalCount === 0) {
+      return ctx.reply('📊 У вас пока нет ни одной транзакции. Добавьте первую, например: "500 зарплата" или "-300 кофе"');
+    }
+    
+    // Получаем все доходы пользователя
+    const incomes = await pool.query(`
+      SELECT 
+        category,
+        SUM(amount) as total,
+        COUNT(*) as count
+      FROM transactions 
+      WHERE user_id = $1 AND type = 'income'
+      GROUP BY category
+      ORDER BY total DESC
+    `, [userId]);
+    
+    // Получаем все расходы пользователя
+    const expenses = await pool.query(`
+      SELECT 
+        category,
+        SUM(amount) as total,
+        COUNT(*) as count
+      FROM transactions 
+      WHERE user_id = $1 AND type = 'expense'
+      GROUP BY category
+      ORDER BY total DESC
+    `, [userId]);
+    
+    console.log(`📊 Found ${incomes.rows.length} income categories, ${expenses.rows.length} expense categories`);
+    
+    let message = '📊 **Вся статистика:**\n\n';
+    
+    // Доходы
+    if (incomes.rows.length > 0) {
+      message += '💰 **Доходы:**\n';
+      let totalIncome = 0;
+      incomes.rows.forEach(row => {
+        message += `  ${row.category}: ${Number(row.total).toFixed(2)}₽\n`;
+        totalIncome += parseFloat(row.total);
+      });
+      message += `  **Всего доходов:** ${totalIncome.toFixed(2)}₽\n\n`;
+    } else {
+      message += '💰 **Доходы:** пока нет\n\n';
+    }
+    
+    // Расходы
+    if (expenses.rows.length > 0) {
+      message += '💸 **Расходы:**\n';
+      let totalExpense = 0;
+      expenses.rows.forEach(row => {
+        message += `  ${row.category}: ${Number(row.total).toFixed(2)}₽\n`;
+        totalExpense += parseFloat(row.total);
+      });
+      message += `  **Всего расходов:** ${totalExpense.toFixed(2)}₽\n\n`;
+      
+      // Баланс
+      const totalIncome = incomes.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
+      const balance = totalIncome - totalExpense;
+      message += `💰 **Баланс:** ${balance.toFixed(2)}₽`;
+      if (balance > 0) message += ' ✅';
+      else if (balance < 0) message += ' ⚠️';
+    } else {
+      message += '💸 **Расходы:** пока нет';
+      const totalIncome = incomes.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
+      if (totalIncome > 0) {
+        message += `\n\n💰 **Баланс:** ${totalIncome.toFixed(2)}₽ ✅`;
+      }
+    }
+    
+    await ctx.reply(message);
+    
+  } catch (err) {
+    console.error('❌ Ошибка статистики:', err);
+    ctx.reply('❌ Ошибка получения статистики. Ошибка: ' + err.message);
+  }
+});
 bot.command('stats', async (ctx) => {
   try {
     const userId = ctx.from.id;
