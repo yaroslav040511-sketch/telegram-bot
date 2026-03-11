@@ -155,6 +155,96 @@ bot.command('stats', async (ctx) => {
       } else if (parts[1] === 'year') {
         period = '365 days';
         periodText = 'за год';
+      } else if (parts[1] === 'all') {
+        period = '100 years';
+        periodText = 'за всё время';
+      }
+    }
+    
+    console.log(`📊 Статистика для user=${userId}, период=${period}`);
+    
+    // Получаем ВСЕ расходы пользователя за период
+    const expenses = await pool.query(`
+      SELECT 
+        category,
+        SUM(amount) as total,
+        COUNT(*) as count
+      FROM transactions 
+      WHERE user_id = $1 
+        AND date > NOW() - $2::interval
+        AND type = 'expense'
+      GROUP BY category
+      ORDER BY total DESC
+    `, [userId, period]);
+    
+    // Получаем ВСЕ доходы пользователя за период
+    const incomes = await pool.query(`
+      SELECT 
+        category,
+        SUM(amount) as total,
+        COUNT(*) as count
+      FROM transactions 
+      WHERE user_id = $1 
+        AND date > NOW() - $2::interval
+        AND type = 'income'
+      GROUP BY category
+      ORDER BY total DESC
+    `, [userId, period]);
+    
+    const totalIncome = incomes.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
+    const totalExpense = expenses.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
+    
+    console.log(`📊 Найдено расходов: ${expenses.rows.length}, доходов: ${incomes.rows.length}`);
+    console.log(`💰 Сумма доходов: ${totalIncome}, расходов: ${totalExpense}`);
+    
+    let message = `📊 Статистика ${periodText}:\n\n`;
+    
+    if (incomes.rows.length > 0) {
+      message += '💰 Доходы по категориям:\n';
+      incomes.rows.forEach(row => {
+        message += `  ${row.category}: ${Number(row.total).toFixed(2)}₽ (${row.count} раз)\n`;
+      });
+      message += `💵 Всего доходов: ${totalIncome.toFixed(2)}₽\n\n`;
+    } else {
+      message += '💰 Доходов нет\n\n';
+    }
+    
+    if (expenses.rows.length > 0) {
+      message += '💸 Расходы по категориям:\n';
+      expenses.rows.forEach(row => {
+        message += `  ${row.category}: ${Number(row.total).toFixed(2)}₽ (${row.count} раз)\n`;
+      });
+      message += `💵 Всего расходов: ${totalExpense.toFixed(2)}₽\n\n`;
+    } else {
+      message += '💸 Расходов нет\n\n';
+    }
+    
+    const balance = totalIncome - totalExpense;
+    message += `💰 Баланс: ${balance.toFixed(2)}₽`;
+    if (balance > 0) message += ' ✅';
+    else if (balance < 0) message += ' ⚠️';
+    
+    await ctx.reply(message);
+    
+  } catch (err) {
+    console.error('❌ Ошибка статистики:', err);
+    ctx.reply('❌ Ошибка получения статистики');
+  }
+});bot.command('stats', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    const text = ctx.message.text;
+    const parts = text.split(' ');
+    let period = '30 days';
+    let periodText = 'за месяц';
+    
+    if (parts.length > 1) {
+      if (parts[1] === 'week') {
+        period = '7 days';
+        periodText = 'за неделю';
+      } else if (parts[1] === 'year') {
+        period = '365 days';
+        periodText = 'за год';
       }
     }
     
