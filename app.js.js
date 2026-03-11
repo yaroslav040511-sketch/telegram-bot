@@ -55,14 +55,14 @@ async function initDatabase() {
 
 // ==================== КАТЕГОРИИ ====================
 const categories = {
-  '🍔 Еда': ['еда', 'кофе', 'обед', 'продукты', 'ресторан', 'пицца', 'кафе', 'суши', 'бургер'],
-  '🚗 Транспорт': ['такси', 'метро', 'бензин', 'автобус', 'троллейбус', 'трамвай'],
-  '🎮 Развлечения': ['кино', 'игры', 'бар', 'клуб', 'концерт', 'пиво', 'кальян'],
-  '🏥 Здоровье': ['аптека', 'врач', 'лекарства', 'больница', 'таблетки'],
-  '📱 Связь': ['интернет', 'телефон', 'связь', 'мтс', 'билайн', 'мегафон'],
-  '🏠 Дом': ['коммуналка', 'квартплата', 'жкх', 'ремонт', 'мебель'],
-  '👕 Одежда': ['одежда', 'обувь', 'джинсы', 'футболка', 'куртка'],
-  '💰 Зарплата': ['зарплата', 'аванс', 'зп', 'доход', 'перевод'],
+  '🍔 Еда': ['еда', 'кофе', 'обед', 'продукты', 'ресторан', 'пицца', 'кафе', 'суши', 'бургер', 'завтрак', 'ужин'],
+  '🚗 Транспорт': ['такси', 'метро', 'бензин', 'автобус', 'троллейбус', 'трамвай', 'маршрутка'],
+  '🎮 Развлечения': ['кино', 'игры', 'бар', 'клуб', 'концерт', 'пиво', 'кальян', 'боулинг'],
+  '🏥 Здоровье': ['аптека', 'врач', 'лекарства', 'больница', 'таблетки', 'анализы'],
+  '📱 Связь': ['интернет', 'телефон', 'связь', 'мтс', 'билайн', 'мегафон', 'теле2'],
+  '🏠 Дом': ['коммуналка', 'квартплата', 'жкх', 'ремонт', 'мебель', 'посуда'],
+  '👕 Одежда': ['одежда', 'обувь', 'джинсы', 'футболка', 'куртка', 'кроссовки'],
+  '💰 Зарплата': ['зарплата', 'аванс', 'зп', 'доход', 'перевод', 'премия', 'бонус'],
   '💸 Прочее': []
 };
 
@@ -88,19 +88,55 @@ bot.start(async (ctx) => {
   const welcome = `
 👋 Привет! Я финансовый бот.
 
-📝 Просто пиши мне траты и доходы:
+📝 Как записывать траты:
 • "500 зарплата" - доход
 • "-300 кофе" - расход
-• "обед 450" - расход
+• "кофе 300" - тоже расход (без минуса)
+• "такси 500" - расход
 
 Команды:
 /stats - статистика за месяц
 /stats week - за неделю
 /stats year - за год
+/test - проверить подключение
 /help - помощь
   `;
   await ctx.reply(welcome);
   console.log(`👋 Новый пользователь: ${ctx.from.id} (@${ctx.from.username || 'no username'})`);
+});
+
+// ТЕСТ БАЗЫ
+bot.command('test', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    const result = await pool.query('SELECT NOW() as time');
+    const count = await pool.query('SELECT COUNT(*) FROM transactions WHERE user_id = $1', [userId]);
+    
+    // Покажем последние 5 транзакций
+    const lastTx = await pool.query(
+      'SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC LIMIT 5',
+      [userId]
+    );
+    
+    let txList = '';
+    if (lastTx.rows.length > 0) {
+      txList = '\n\n📋 Последние записи:\n';
+      lastTx.rows.forEach((tx, i) => {
+        const emoji = tx.type === 'income' ? '💰' : '💸';
+        txList += `${emoji} ${tx.amount}₽ - ${tx.category} (${tx.description})\n`;
+      });
+    }
+    
+    await ctx.reply(
+      `✅ База данных подключена!\n` +
+      `🕐 Время сервера: ${result.rows[0].time}\n` +
+      `📊 Ваших транзакций: ${count.rows[0].count}` +
+      txList
+    );
+  } catch (err) {
+    console.error('❌ Ошибка теста БД:', err);
+    ctx.reply('❌ Ошибка подключения к базе данных');
+  }
 });
 
 // СТАТИСТИКА
@@ -110,16 +146,22 @@ bot.command('stats', async (ctx) => {
     const text = ctx.message.text;
     const parts = text.split(' ');
     let period = '30 days';
+    let periodText = 'за месяц';
     
     if (parts.length > 1) {
-      if (parts[1] === 'week') period = '7 days';
-      else if (parts[1] === 'year') period = '365 days';
+      if (parts[1] === 'week') {
+        period = '7 days';
+        periodText = 'за неделю';
+      } else if (parts[1] === 'year') {
+        period = '365 days';
+        periodText = 'за год';
+      }
     }
     
     console.log(`📊 Статистика для user=${userId}, период=${period}`);
     
-    // Получаем все расходы пользователя
-    const result = await pool.query(`
+    // Получаем расходы
+    const expenses = await pool.query(`
       SELECT 
         category,
         SUM(amount) as total,
@@ -132,35 +174,47 @@ bot.command('stats', async (ctx) => {
       ORDER BY total DESC
     `, [userId, period]);
     
-    console.log(`📊 Найдено записей: ${result.rows.length}`);
+    // Получаем доходы
+    const incomes = await pool.query(`
+      SELECT 
+        SUM(amount) as total
+      FROM transactions 
+      WHERE user_id = $1 
+        AND date > NOW() - $2::interval
+        AND type = 'income'
+    `, [userId, period]);
     
-    if (result.rows.length === 0) {
-      // Если нет расходов, покажем все транзакции пользователя для отладки
-      const allUserTx = await pool.query(
-        'SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC LIMIT 5',
-        [userId]
-      );
-      
-      if (allUserTx.rows.length > 0) {
-        console.log('📊 Последние транзакции пользователя:');
-        allUserTx.rows.forEach(tx => {
-          console.log(`   ${tx.date}: ${tx.type} ${tx.amount}₽ (${tx.category})`);
-        });
-        return ctx.reply('📊 У вас есть транзакции, но нет расходов за этот период. Попробуй /stats year');
-      } else {
-        return ctx.reply('📊 У вас пока нет ни одной транзакции. Добавь первую: например "500 зарплата" или "-300 кофе"');
+    const totalIncome = parseFloat(incomes.rows[0]?.total || 0);
+    const totalExpense = expenses.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
+    
+    console.log(`📊 Найдено расходов: ${expenses.rows.length}, доходов: ${totalIncome}`);
+    
+    let message = `📊 Статистика ${periodText}:\n\n`;
+    
+    if (totalIncome > 0) {
+      message += `💰 Доходы: ${totalIncome.toFixed(2)}₽\n`;
+    }
+    
+    if (expenses.rows.length === 0) {
+      message += '💸 Расходов нет\n';
+    } else {
+      message += '💸 Расходы по категориям:\n';
+      expenses.rows.forEach(row => {
+        message += `  ${row.category}: ${Number(row.total).toFixed(2)}₽ (${row.count} раз)\n`;
+      });
+      message += `\n💵 Всего расходов: ${totalExpense.toFixed(2)}₽\n`;
+    }
+    
+    if (totalIncome > 0) {
+      const balance = totalIncome - totalExpense;
+      message += `💰 Баланс: ${balance.toFixed(2)}₽`;
+      if (balance > 0) {
+        message += ' ✅';
+      } else if (balance < 0) {
+        message += ' ⚠️';
       }
     }
     
-    let message = '📊 Статистика расходов:\n\n';
-    let total = 0;
-    
-    result.rows.forEach(row => {
-      message += `${row.category}: ${Number(row.total).toFixed(2)}₽ (${row.count} раз)\n`;
-      total += parseFloat(row.total);
-    });
-    
-    message += `\n💰 Всего: ${total.toFixed(2)}₽`;
     await ctx.reply(message);
     
   } catch (err) {
@@ -176,9 +230,10 @@ bot.command('help', async (ctx) => {
 
 💰 Доходы и расходы:
 • Просто пиши сумму и описание
-  Пример: "500 зарплата"
-  Пример: "-300 кофе"
-  Пример: "обед 450"
+  Пример: "500 зарплата" - доход
+  Пример: "-300 кофе" - расход
+  Пример: "кофе 300" - тоже расход
+  Пример: "такси 500" - расход
 
 📊 Статистика:
 /stats - за месяц
@@ -189,20 +244,6 @@ bot.command('help', async (ctx) => {
 /test - проверить подключение к базе
   `;
   await ctx.reply(help);
-});
-
-// ТЕСТ БАЗЫ
-bot.command('test', async (ctx) => {
-  try {
-    const userId = ctx.from.id;
-    const result = await pool.query('SELECT NOW() as time');
-    const count = await pool.query('SELECT COUNT(*) FROM transactions WHERE user_id = $1', [userId]);
-    
-    await ctx.reply(`✅ База данных подключена!\nВремя сервера: ${result.rows[0].time}\nВаших транзакций: ${count.rows[0].count}`);
-  } catch (err) {
-    console.error('❌ Ошибка теста БД:', err);
-    ctx.reply('❌ Ошибка подключения к базе данных');
-  }
 });
 
 // ==================== ОБРАБОТКА ТЕКСТА ====================
@@ -225,9 +266,26 @@ bot.on('text', async (ctx) => {
     let amount = parseFloat(match[0].replace(/\s/g, '').replace(',', '.'));
     const description = text.replace(match[0], '').trim() || 'без описания';
     
-    const type = amount > 0 ? 'income' : 'expense';
+    // Определяем тип (доход или расход)
+    let type = 'expense'; // по умолчанию расход
+    
+    // Ключевые слова для дохода
+    const incomeKeywords = ['зарплата', 'доход', 'аванс', 'зп', 'перевод', 'премия', 'бонус', 'заработок'];
+    const isIncome = incomeKeywords.some(keyword => text.toLowerCase().includes(keyword));
+    
+    if (amount < 0) {
+      // Если пользователь поставил минус - это точно расход
+      type = 'expense';
+      amount = Math.abs(amount);
+    } else if (isIncome) {
+      // Если есть ключевые слова дохода - это доход
+      type = 'income';
+    } else {
+      // Во всех остальных случаях - расход
+      type = 'expense';
+    }
+    
     const category = detectCategory(text);
-    amount = Math.abs(amount);
     
     // Сохраняем в базу
     await pool.query(
@@ -242,7 +300,7 @@ bot.on('text', async (ctx) => {
     
   } catch (err) {
     console.error('❌ Ошибка обработки сообщения:', err);
-    ctx.reply('❌ Произошла ошибка');
+    ctx.reply('❌ Произошла ошибка. Попробуй еще раз.');
   }
 });
 
