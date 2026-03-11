@@ -21,18 +21,19 @@
     <td width="45%" valign="top">
       <img src="docs/IMG_0139.PNG" width="420" alt="Kalverion Telegram screenshot">
     </td>
-    <td width="55%" valign="top" style="padding-left:30px;">
-      <h2>Features</h2>
+ <td width="55%" valign="top" style="padding-left:30px;">
 
-      <p>🦞 Built with OpenClaw for AI-powered Telegram interaction</p>
-      <p>📒 Double-entry accounting</p>
-      <p>📊 Cashflow forecasting</p>
-      <p>🔁 Recurring bills &amp; income</p>
-      <p>💳 Debt payoff optimization</p>
-      <p>📈 Financial graphs</p>
-      <p>🤖 AI transaction parsing with Natural Language</p>
-    </td>
-  </tr>
+<h2>Features</h2>
+
+🦞 Built with OpenClaw for AI-powered Telegram interaction<br>
+📒 Double-entry accounting<br>
+📊 Cashflow forecasting<br>
+🔁 Recurring bills &amp; income<br>
+💳 Debt payoff optimization<br>
+📈 Financial graphs<br>
+🤖 AI transaction parsing with Natural Language
+
+</td> </tr>
 </table>
 
 <hr>
