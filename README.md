@@ -7,6 +7,10 @@
 </p>
 
 <p>
+⭐ If you find this project useful, please consider giving it a star.
+</p>
+
+<p>
   <img alt="version" src="https://img.shields.io/badge/version-v1.0.0-blue">
   <img alt="node" src="https://img.shields.io/badge/node-18%2B-green">
   <img alt="sqlite" src="https://img.shields.io/badge/database-SQLite-lightgrey">
@@ -220,19 +224,17 @@ Status:          ⚠️ Tight</code></pre>
   <li>OpenClaw agent framework</li>
 </ul>
 
-<hr>
 
-<h2>⭐ Support the Project</h2>
+<h2>Roadmap</h2>
 
-<p>
-  If you find this project useful, please consider giving it a star.
-</p>
-
-<p>
-  It helps others discover the project and motivates further development.
-</p>
-
-<hr>
+<ul>
+<li>Multi-user support</li>
+<li>Improved financial forecasting</li>
+<li>Additional financial graphs</li>
+<li>Optional web dashboard</li>
+<li>Better Natural Language transaction detection</li>
+<li>Docker deployment</li>
+</ul>
 
 <p>
   <a href="HELP.md"><strong>Commands</strong></a>
