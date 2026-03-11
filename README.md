@@ -236,8 +236,8 @@ Status:          ⚠️ Tight</code></pre>
 <li>Docker deployment</li>
 </ul>
 
-<p align="center">
-Please star the project, it helps others discover the project and supports future development.
+<p>
+<li>Please star the project, it helps others discover the project and supports future development.
 </p>
 
 <p>
