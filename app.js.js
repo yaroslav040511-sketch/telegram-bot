@@ -762,6 +762,306 @@ bot.hears('🤖 AI совет', async (ctx) => {
     console.error('❌ Ошибка AI анализа:', err);
     ctx.reply('❌ Ошибка при анализе данных');
   }
+});// ==================== ПРЕМИУМ ФУНКЦИИ ====================
+
+// ... (существующий код до AI совета)
+
+// Графики (премиум)
+bot.hears('📈 Графики', async (ctx) => {
+  const userId = ctx.from.id;
+  if (!await checkPremium(ctx, 'graph')) return;
+  const mode = await getChatMode(userId);
+  
+  try {
+    // Получаем данные для графиков
+    const expenses = await pool.query(`
+      SELECT category, SUM(amount) as total
+      FROM transactions 
+      WHERE user_id = $1 AND type = 'expense'
+      GROUP BY category
+      ORDER BY total DESC
+    `, [userId]);
+    
+    const incomes = await pool.query(`
+      SELECT SUM(amount) as total
+      FROM transactions 
+      WHERE user_id = $1 AND type = 'income'
+    `, [userId]);
+    
+    const totalIncome = parseFloat(incomes.rows[0]?.total || 0);
+    const totalExpense = expenses.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
+    
+    if (expenses.rows.length === 0 && totalIncome === 0) {
+      if (mode === 'rude') {
+        await ctx.reply('📈 Ебать, у тебя даже данных нет! Добавь что-нибудь, лох!');
+      } else {
+        await ctx.reply('📈 У вас пока нет данных для графиков. Добавьте несколько трат!');
+      }
+      return;
+    }
+    
+    // Формируем текстовый график
+    let message = mode === 'rude' 
+      ? '📈 **ГРАФИКИ ТВОИХ ПРОЁБОВ, ПИДОР!**\n\n' 
+      : '📈 **Визуализация расходов:**\n\n';
+    
+    message += `💰 Доходы: ${totalIncome.toFixed(0)}₽\n`;
+    message += `💸 Расходы: ${totalExpense.toFixed(0)}₽\n`;
+    message += `💵 Баланс: ${(totalIncome - totalExpense).toFixed(0)}₽\n\n`;
+    
+    if (expenses.rows.length > 0) {
+      message += mode === 'rude' ? '📊 **Куда улетело:**\n' : '📊 **Распределение расходов:**\n';
+      
+      expenses.rows.forEach(row => {
+        const amount = parseFloat(row.total);
+        const percent = ((amount / totalExpense) * 100).toFixed(1);
+        const barLength = Math.floor(percent / 5);
+        const bar = '█'.repeat(barLength) + '░'.repeat(20 - barLength);
+        
+        message += `${row.category}:\n`;
+        message += `   ${amount.toFixed(0)}₽ (${percent}%)\n`;
+        message += `   ${bar}\n`;
+      });
+    }
+    
+    if (mode === 'rude') {
+      message += `\n🎯 **Вывод:** ${totalIncome - totalExpense > 0 ? 'Не всё проебал, молодец!' : 'Ты в минусе, пидор! Срочно работай!'}`;
+    }
+    
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+    
+  } catch (err) {
+    console.error('❌ Ошибка графиков:', err);
+    ctx.reply('❌ Ошибка при создании графиков');
+  }
+});
+
+// Цели (премиум)
+bot.hears('🎯 Цели', async (ctx) => {
+  const userId = ctx.from.id;
+  if (!await checkPremium(ctx, 'goals')) return;
+  const mode = await getChatMode(userId);
+  
+  // Показываем существующие цели
+  try {
+    const goals = await pool.query(`
+      SELECT * FROM goals 
+      WHERE user_id = $1 AND completed = false 
+      ORDER BY deadline ASC
+    `, [userId]);
+    
+    if (goals.rows.length > 0) {
+      let message = mode === 'rude' 
+        ? '🎯 **ТВОИ ЦЕЛИ, ЛОХ!**\n\n' 
+        : '🎯 **Ваши цели:**\n\n';
+      
+      goals.rows.forEach(goal => {
+        const progress = (goal.current_amount / goal.target_amount * 100).toFixed(1);
+        const barLength = Math.floor(progress / 5);
+        const bar = '█'.repeat(barLength) + '░'.repeat(20 - barLength);
+        
+        message += `**${goal.name}**\n`;
+        message += `   Цель: ${goal.target_amount}₽\n`;
+        message += `   Накоплено: ${goal.current_amount}₽ (${progress}%)\n`;
+        message += `   ${bar}\n`;
+        message += `   Дедлайн: ${new Date(goal.deadline).toLocaleDateString('ru-RU')}\n\n`;
+      });
+      
+      message += mode === 'rude' 
+        ? '\n➕ Чтобы создать новую цель, напиши: цель:Название,сумма,дата\n   Например: цель:Айфон,100000,2024-12-31'
+        : '\n➕ Создать новую цель: цель:Название,сумма,дата\n   Пример: цель:Айфон,100000,2024-12-31';
+      
+      await ctx.reply(message, { parse_mode: 'Markdown' });
+    } else {
+      if (mode === 'rude') {
+        await ctx.reply(
+          '🎯 У тебя ещё нет целей, лох!\n\n' +
+          'Создай: цель:Название,сумма,дата\n' +
+          'Нахуй: цель:Айфон,100000,2024-12-31'
+        );
+      } else {
+        await ctx.reply(
+          '🎯 У вас пока нет целей.\n\n' +
+          'Создайте цель: цель:Название,сумма,дата\n' +
+          'Пример: цель:Айфон,100000,2024-12-31'
+        );
+      }
+    }
+    
+    // Устанавливаем состояние для создания цели
+    userStates.set(ctx.from.id, 'waiting_goal');
+    
+  } catch (err) {
+    console.error('❌ Ошибка получения целей:', err);
+    ctx.reply('❌ Ошибка при получении целей');
+  }
+});
+
+// Челленджи (премиум)
+bot.hears('🏆 Челленджи', async (ctx) => {
+  const userId = ctx.from.id;
+  if (!await checkPremium(ctx, 'challenges')) return;
+  const mode = await getChatMode(userId);
+  
+  const challengesKeyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('🚫 Неделя без кофе', 'challenge_nocoffee')],
+    [Markup.button.callback('🍔 Месяц без фастфуда', 'challenge_nofastfood')],
+    [Markup.button.callback('💰 Накопить 5000₽', 'challenge_save')],
+    [Markup.button.callback('🏃 Месяц спорта', 'challenge_sport')],
+    [Markup.button.callback('📚 Прочитать книгу', 'challenge_book')]
+  ]);
+  
+  if (mode === 'rude') {
+    await ctx.reply(
+      '🏆 **ЧЕЛЛЕНДЖИ ДЛЯ ЛОХОВ**\n\n' +
+      'Выбери испытание и докажи, что ты не просто так яйца носишь!\n\n' +
+      '• 🚫 Неделя без кофе - сэкономишь 2000₽\n' +
+      '• 🍔 Месяц без фастфуда - сэкономишь 5000₽\n' +
+      '• 💰 Накопить 5000₽ за неделю\n' +
+      '• 🏃 Месяц спорта - бесплатно\n' +
+      '• 📚 Прочитать книгу - развитие',
+      challengesKeyboard
+    );
+  } else {
+    await ctx.reply(
+      '🏆 **Доступные челленджи:**\n\n' +
+      'Выберите испытание для себя:\n\n' +
+      '• 🚫 Неделя без кофе\n' +
+      '• 🍔 Месяц без фастфуда\n' +
+      '• 💰 Накопить 5000₽ за неделю\n' +
+      '• 🏃 Месяц спорта\n' +
+      '• 📚 Прочитать книгу',
+      challengesKeyboard
+    );
+  }
+});
+
+// Обработка кнопок челленджей
+bot.action(/challenge_(.+)/, async (ctx) => {
+  const userId = ctx.from.id;
+  if (!await isPremium(userId)) {
+    await ctx.answerCbQuery('❌ Это премиум функция!', { show_alert: true });
+    return;
+  }
+  
+  const mode = await getChatMode(userId);
+  const challenge = ctx.match[1];
+  
+  let response = '';
+  let savings = 0;
+  
+  switch(challenge) {
+    case 'nocoffee':
+      savings = 2000;
+      response = mode === 'rude' 
+        ? '✅ Челлендж "Неделя без кофе" активирован!\n\nЕсли выдержишь - сэкономишь 2000₽. Не дрочи кофе, пидор! ☕🚫'
+        : '✅ Челлендж "Неделя без кофе" активирован!\n\nЕсли выдержите - сэкономите около 2000₽. Удачи!';
+      break;
+    case 'nofastfood':
+      savings = 5000;
+      response = mode === 'rude'
+        ? '✅ Челлендж "Месяц без фастфуда" активирован!\n\n5000₽ сэкономишь, лох! Готовь сам, не жри эту гадость! 🍔🚫'
+        : '✅ Челлендж "Месяц без фастфуда" активирован!\n\nПотенциальная экономия: 5000₽. Будьте здоровы!';
+      break;
+    case 'save':
+      response = mode === 'rude'
+        ? '✅ Челлендж "Накопить 5000₽ за неделю" активирован!\n\nОткладывай по 715₽ в день, пидор, и будет тебе счастье! 💰'
+        : '✅ Челлендж "Накопить 5000₽ за неделю" активирован!\n\nНужно откладывать по 715₽ в день. Вперёд!';
+      break;
+    case 'sport':
+      response = mode === 'rude'
+        ? '✅ Челлендж "Месяц спорта" активирован!\n\nХватит жопу пролеживать, иди качайся, лох! 🏃'
+        : '✅ Челлендж "Месяц спорта" активирован!\n\nЗдоровье - это важно! Удачи!';
+      break;
+    case 'book':
+      response = mode === 'rude'
+        ? '✅ Челлендж "Прочитать книгу" активирован!\n\nРазвивайся, пидор, а то тупым помрёшь! 📚'
+        : '✅ Челлендж "Прочитать книгу" активирован!\n\nСаморазвитие - лучшая инвестиция!';
+      break;
+  }
+  
+  // Сохраняем челлендж в базу
+  try {
+    const startDate = new Date();
+    const endDate = new Date();
+    
+    if (challenge.includes('week') || challenge === 'nocoffee' || challenge === 'save') {
+      endDate.setDate(endDate.getDate() + 7);
+    } else {
+      endDate.setMonth(endDate.getMonth() + 1);
+    }
+    
+    await pool.query(
+      'INSERT INTO challenges (user_id, name, start_date, end_date) VALUES ($1, $2, $3, $4)',
+      [userId, challenge, startDate, endDate]
+    );
+    
+  } catch (err) {
+    console.error('Ошибка сохранения челленджа:', err);
+  }
+  
+  await ctx.answerCbQuery();
+  await ctx.reply(response);
+  
+  if (savings > 0 && mode === 'rude') {
+    await ctx.reply(`💡 Кстати, если выполнишь - у тебя будет ${savings}₽ лишних. Не проеби их!`);
+  }
+});
+
+// Просмотр активных челленджей
+bot.command('mychallenges', async (ctx) => {
+  const userId = ctx.from.id;
+  if (!await isPremium(userId)) {
+    await ctx.reply('❌ Эта команда только для премиум пользователей!');
+    return;
+  }
+  
+  const mode = await getChatMode(userId);
+  
+  try {
+    const challenges = await pool.query(`
+      SELECT * FROM challenges 
+      WHERE user_id = $1 AND completed = false
+      ORDER BY end_date ASC
+    `, [userId]);
+    
+    if (challenges.rows.length === 0) {
+      if (mode === 'rude') {
+        await ctx.reply('🏆 У тебя нет активных челленджей, лох! Займись чем-нибудь!');
+      } else {
+        await ctx.reply('🏆 У вас нет активных челленджей. Начните новый в разделе "🏆 Челленджи"');
+      }
+      return;
+    }
+    
+    let message = mode === 'rude' 
+      ? '🏆 **ТВОИ ЧЕЛЛЕНДЖИ, ПИДОР!**\n\n' 
+      : '🏆 **Ваши активные челленджи:**\n\n';
+    
+    challenges.rows.forEach(ch => {
+      const endDate = new Date(ch.end_date).toLocaleDateString('ru-RU');
+      const daysLeft = Math.ceil((new Date(ch.end_date) - new Date()) / (1000 * 60 * 60 * 24));
+      
+      let name = '';
+      switch(ch.name) {
+        case 'nocoffee': name = '🚫 Неделя без кофе'; break;
+        case 'nofastfood': name = '🍔 Месяц без фастфуда'; break;
+        case 'save': name = '💰 Накопить 5000₽'; break;
+        case 'sport': name = '🏃 Месяц спорта'; break;
+        case 'book': name = '📚 Прочитать книгу'; break;
+        default: name = ch.name;
+      }
+      
+      message += `${name}\n`;
+      message += `   Дедлайн: ${endDate} (осталось ${daysLeft} дней)\n\n`;
+    });
+    
+    await ctx.reply(message);
+    
+  } catch (err) {
+    console.error('Ошибка получения челленджей:', err);
+    ctx.reply('❌ Ошибка при получении челленджей');
+  }
 });
 
 // ==================== ПРОМОКОДЫ ====================
