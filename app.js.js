@@ -482,40 +482,115 @@ bot.hears('🎯 Цели', async (ctx) => {
   );
 });
 
-// AI совет (премиум)
+// AI совет (премиум) - ИСПРАВЛЕННАЯ ВЕРСИЯ
 bot.hears('🤖 AI совет', async (ctx) => {
   const userId = ctx.from.id;
   if (!await checkPremium(ctx, 'advice')) return;
   
-  // Получаем данные пользователя
-  const expenses = await pool.query(`
-    SELECT category, SUM(amount) as total
-    FROM transactions 
-    WHERE user_id = $1 AND type = 'expense' AND date > NOW() - INTERVAL '30 days'
-    GROUP BY category
-    ORDER BY total DESC
-    LIMIT 3
-  `, [userId]);
-  
-  let advice = '🤖 **AI-анализ ваших трат:**\n\n';
-  
-  if (expenses.rows.length > 0) {
+  try {
+    // Получаем данные за последние 30 дней
+    const expenses = await pool.query(`
+      SELECT category, SUM(amount) as total, COUNT(*) as count
+      FROM transactions 
+      WHERE user_id = $1 AND type = 'expense' AND date > NOW() - INTERVAL '30 days'
+      GROUP BY category
+      ORDER BY total DESC
+    `, [userId]);
+    
+    // Получаем общую сумму доходов за 30 дней
+    const incomes = await pool.query(`
+      SELECT SUM(amount) as total
+      FROM transactions 
+      WHERE user_id = $1 AND type = 'income' AND date > NOW() - INTERVAL '30 days'
+    `, [userId]);
+    
+    const totalIncome = parseFloat(incomes.rows[0]?.total || 0);
+    const totalExpense = expenses.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
+    
+    console.log(`🤖 AI анализ: найдено ${expenses.rows.length} категорий, доход=${totalIncome}, расход=${totalExpense}`);
+    
+    if (expenses.rows.length === 0) {
+      await ctx.reply(
+        '🤖 **AI-анализ ваших трат:**\n\n' +
+        '📊 Пока недостаточно данных для анализа.\n' +
+        '💡 Добавьте больше трат, чтобы получить персональные советы!\n\n' +
+        'Примеры: "кофе 300", "такси 500", "продукты 2000"'
+      );
+      return;
+    }
+    
+    let advice = '🤖 **AI-анализ ваших трат за 30 дней:**\n\n';
+    
+    // Общий анализ
+    if (totalIncome > 0) {
+      const savingsRate = ((totalIncome - totalExpense) / totalIncome * 100).toFixed(1);
+      advice += `💰 **Доход:** ${totalIncome.toFixed(0)}₽\n`;
+      advice += `💸 **Расход:** ${totalExpense.toFixed(0)}₽\n`;
+      advice += `📊 **Накопления:** ${(totalIncome - totalExpense).toFixed(0)}₽ (${savingsRate}% от дохода)\n\n`;
+      
+      if (savingsRate < 10) {
+        advice += '⚠️ **Совет:** Вы тратите почти всё! Постарайтесь откладывать хотя бы 10-20% от дохода.\n\n';
+      } else if (savingsRate > 30) {
+        advice += '✅ **Отлично!** Вы много откладываете. Так держать!\n\n';
+      }
+    }
+    
+    // Анализ по категориям
+    advice += '📌 **Детальный анализ:**\n';
+    
     expenses.rows.forEach(row => {
-      if (row.category === '🍔 Еда') {
-        advice += `• В этом месяце на еду потрачено ${parseFloat(row.total).toFixed(2)}₽. Попробуй готовить дома чаще!\n`;
-      } else if (row.category === '🚗 Транспорт') {
-        advice += `• Транспорт: ${parseFloat(row.total).toFixed(2)}₽. Может, стоит купить проездной?\n`;
-      } else if (row.category === '🎮 Развлечения') {
-        advice += `• Развлечения: ${parseFloat(row.total).toFixed(2)}₽. Не забывай отдыхать, но знай меру 😉\n`;
+      const category = row.category;
+      const amount = parseFloat(row.total);
+      const count = parseInt(row.count);
+      const percent = ((amount / totalExpense) * 100).toFixed(1);
+      
+      advice += `\n${category}: ${amount.toFixed(0)}₽ (${percent}% от всех трат)\n`;
+      
+      // Персональные советы по категориям
+      if (category.includes('🍔 Еда') && amount > 10000) {
+        advice += `   💡 Многовато на еду! Попробуй готовить дома - экономия до 30%\n`;
+      } else if (category.includes('🍔 Еда') && amount < 3000) {
+        advice += `   👍 Отлично экономишь на еде!\n`;
+      }
+      
+      if (category.includes('🚗 Транспорт') && amount > 5000) {
+        advice += `   💡 Возможно, стоит купить проездной или ходить пешком чаще\n`;
+      }
+      
+      if (category.includes('🎮 Развлечения') && amount > 5000) {
+        advice += `   💡 Много на развлечения - может, найдешь бесплатные альтернативы?\n`;
+      }
+      
+      if (category.includes('🎁 Подарки') && amount > 3000) {
+        advice += `   💡 Подарки - это приятно, но может объединиться с друзьями?\n`;
+      }
+      
+      if (count > 10 && category.includes('🍔 Еда')) {
+        advice += `   💡 Ты покупаешь еду ${count} раз в месяц! Может, реже?\n`;
+      }
+      
+      if (category.includes('🏥 Здоровье') && amount < 1000) {
+        advice += `   💡 Здоровье важно! Не забывай про профилактику\n`;
       }
     });
-  } else {
-    advice += '• Пока недостаточно данных для анализа. Добавь больше трат!\n';
+    
+    // Итоговый совет
+    advice += '\n🎯 **Главный совет:**\n';
+    
+    const topCategory = expenses.rows[0];
+    if (topCategory) {
+      advice += `Больше всего тратишь на ${topCategory.category} - `;
+      advice += `это ${((parseFloat(topCategory.total)/totalExpense)*100).toFixed(1)}% всех расходов. `;
+      advice += `Попробуй сократить эту категорию на 10% в следующем месяце!`;
+    }
+    
+    await ctx.reply(advice);
+    
+  } catch (err) {
+    console.error('❌ Ошибка AI анализа:', err);
+    await ctx.reply('❌ Ошибка при анализе данных');
   }
-  
-  await ctx.reply(advice);
 });
-
 // Челленджи (премиум)
 bot.hears('🏆 Челленджи', async (ctx) => {
   const userId = ctx.from.id;
