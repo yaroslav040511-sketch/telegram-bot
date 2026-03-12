@@ -48,10 +48,19 @@ async function initDatabase() {
       CREATE TABLE IF NOT EXISTS premium_users (
         user_id BIGINT PRIMARY KEY,
         valid_until TIMESTAMP NOT NULL,
-        chat_mode VARCHAR(20) DEFAULT 'normal', -- normal или rude
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    
+    // Добавляем колонку chat_mode если её нет
+    try {
+      await pool.query(`
+        ALTER TABLE premium_users ADD COLUMN IF NOT EXISTS chat_mode VARCHAR(20) DEFAULT 'normal'
+      `);
+      console.log('✅ Колонка chat_mode добавлена или уже существует');
+    } catch (err) {
+      console.log('⚠️ Ошибка при добавлении колонки chat_mode:', err.message);
+    }
     
     // Таблица промокодов
     await pool.query(`
@@ -72,6 +81,20 @@ async function initDatabase() {
         user_id BIGINT NOT NULL,
         promocode_id INTEGER REFERENCES promocodes(id),
         used_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    
+    // Таблица целей (премиум)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS goals (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        name VARCHAR(100) NOT NULL,
+        target_amount DECIMAL(10,2) NOT NULL,
+        current_amount DECIMAL(10,2) DEFAULT 0,
+        deadline DATE,
+        completed BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW()
       )
     `);
     
@@ -136,28 +159,76 @@ async function isPremium(userId) {
   }
 }
 
-// ==================== ПОЛУЧЕНИЕ РЕЖИМА ЧАТА ====================
+// ==================== ПОЛУЧЕНИЕ РЕЖИМА ЧАТА (БЕЗОПАСНАЯ ВЕРСИЯ) ====================
 async function getChatMode(userId) {
   try {
-    const result = await pool.query(
-      'SELECT chat_mode FROM premium_users WHERE user_id = $1',
-      [userId]
-    );
-    return result.rows[0]?.chat_mode || 'normal';
+    // Проверяем, является ли пользователь премиум
+    const isUserPremium = await isPremium(userId);
+    if (!isUserPremium) return 'normal';
+    
+    // Пробуем получить режим
+    try {
+      const result = await pool.query(
+        'SELECT chat_mode FROM premium_users WHERE user_id = $1',
+        [userId]
+      );
+      if (result.rows.length > 0 && result.rows[0].chat_mode) {
+        return result.rows[0].chat_mode;
+      }
+    } catch (err) {
+      // Если колонки нет - пробуем добавить
+      if (err.code === '42703') {
+        console.log('⚠️ Колонка chat_mode отсутствует, добавляем...');
+        try {
+          await pool.query('ALTER TABLE premium_users ADD COLUMN IF NOT EXISTS chat_mode VARCHAR(20) DEFAULT \'normal\'');
+          console.log('✅ Колонка chat_mode успешно добавлена');
+        } catch (alterErr) {
+          console.error('❌ Не удалось добавить колонку:', alterErr.message);
+        }
+      }
+    }
+    return 'normal';
   } catch (err) {
     console.error('Ошибка получения режима:', err);
     return 'normal';
   }
 }
 
-// ==================== УСТАНОВКА РЕЖИМА ЧАТА ====================
+// ==================== УСТАНОВКА РЕЖИМА ЧАТА (БЕЗОПАСНАЯ ВЕРСИЯ) ====================
 async function setChatMode(userId, mode) {
   try {
-    await pool.query(
-      'UPDATE premium_users SET chat_mode = $1 WHERE user_id = $2',
-      [mode, userId]
-    );
-    return true;
+    // Проверяем, является ли пользователь премиум
+    const isUserPremium = await isPremium(userId);
+    if (!isUserPremium) return false;
+    
+    // Пробуем обновить режим
+    try {
+      await pool.query(
+        'UPDATE premium_users SET chat_mode = $1 WHERE user_id = $2',
+        [mode, userId]
+      );
+      console.log(`✅ Режим для user ${userId} установлен на ${mode}`);
+      return true;
+    } catch (err) {
+      // Если колонки нет - добавляем и пробуем снова
+      if (err.code === '42703') {
+        console.log('⚠️ Колонка chat_mode отсутствует, добавляем...');
+        try {
+          await pool.query('ALTER TABLE premium_users ADD COLUMN IF NOT EXISTS chat_mode VARCHAR(20) DEFAULT \'normal\'');
+          // Пробуем снова
+          await pool.query(
+            'UPDATE premium_users SET chat_mode = $1 WHERE user_id = $2',
+            [mode, userId]
+          );
+          console.log(`✅ Режим для user ${userId} установлен на ${mode}`);
+          return true;
+        } catch (alterErr) {
+          console.error('❌ Не удалось добавить колонку:', alterErr.message);
+          return false;
+        }
+      }
+      throw err;
+    }
   } catch (err) {
     console.error('Ошибка установки режима:', err);
     return false;
@@ -253,16 +324,8 @@ const userStates = new Map();
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
   
-  // Принудительно получаем свежий режим из базы
-  const modeResult = await pool.query(
-    'SELECT chat_mode FROM premium_users WHERE user_id = $1',
-    [userId]
-  );
-  
-  let mode = 'normal';
-  if (modeResult.rows.length > 0 && modeResult.rows[0].chat_mode) {
-    mode = modeResult.rows[0].chat_mode;
-  }
+  // Получаем режим из базы
+  const mode = await getChatMode(userId);
   
   console.log(`🚀 Старт для user ${userId}, режим: ${mode}`);
   
@@ -297,6 +360,7 @@ bot.start(async (ctx) => {
   await ctx.reply('Главное меню:', mainMenu);
   console.log(`👋 Новый пользователь: ${ctx.from.id} (@${ctx.from.username || 'no username'})`);
 });
+
 // ПОМОЩЬ
 bot.command('help', async (ctx) => {
   await showHelp(ctx);
@@ -314,6 +378,7 @@ async function showHelp(ctx) {
 /stats - смотри куда проебал бабки
 /my - последние траты (порыдать)
 /premium - узнай как стать богаче
+/mode - проверить текущий режим
 
 Промокод: VIP40 (ебашь, пока не закрыли)`);
   } else {
@@ -323,10 +388,26 @@ async function showHelp(ctx) {
 /my - последние записи
 /premium - премиум функции
 /promo - активировать промокод
+/mode - текущий режим
 
 🎫 Промокод VIP40 - премиум навсегда!`);
   }
 }
+
+// Команда для проверки режима
+bot.command('mode', async (ctx) => {
+  const userId = ctx.from.id;
+  const mode = await getChatMode(userId);
+  const isUserPremium = await isPremium(userId);
+  
+  if (!isUserPremium) {
+    await ctx.reply('❌ Эта команда только для премиум пользователей!');
+    return;
+  }
+  
+  const modeText = mode === 'rude' ? '😈 Смешной (с матом)' : '😇 Обычный (вежливый)';
+  await ctx.reply(`Текущий режим: ${modeText}`);
+});
 
 // Возврат в главное меню
 bot.hears('🔙 В главное меню', async (ctx) => {
@@ -526,7 +607,7 @@ async function showPremiumInfo(ctx) {
   );
 }
 
-// Режим общения (новая функция)
+// Режим общения
 bot.hears('😈 Режим общения', async (ctx) => {
   const userId = ctx.from.id;
   if (!await checkPremium(ctx, 'mode')) return;
@@ -542,26 +623,37 @@ bot.hears('😈 Режим общения', async (ctx) => {
   );
 });
 
-// Обработка выбора режима - ИСПРАВЛЕНО
+// Обработка выбора режима
 bot.action('mode_normal', async (ctx) => {
   const userId = ctx.from.id;
-  await setChatMode(userId, 'normal');
-  await ctx.answerCbQuery('✅ Выбран обычный режим');
-  await ctx.editMessageText(
-    '😇 **Режим изменён**\n\nТеперь я буду общаться с тобой вежливо и культурно.\n\nНажми /start чтобы увидеть изменения!',
-    { parse_mode: 'Markdown' }
-  );
+  const success = await setChatMode(userId, 'normal');
+  
+  if (success) {
+    await ctx.answerCbQuery('✅ Выбран обычный режим');
+    await ctx.editMessageText(
+      '😇 **Режим изменён**\n\nТеперь я буду общаться с тобой вежливо и культурно.\n\nНажми /start чтобы увидеть изменения!',
+      { parse_mode: 'Markdown' }
+    );
+  } else {
+    await ctx.answerCbQuery('❌ Ошибка при смене режима');
+  }
 });
 
 bot.action('mode_rude', async (ctx) => {
   const userId = ctx.from.id;
-  await setChatMode(userId, 'rude');
-  await ctx.answerCbQuery('✅ Выбран смешной режим');
-  await ctx.editMessageText(
-    '😈 **Режим изменён, бля!**\n\nТеперь я буду с тобой по-пацански разговаривать, с матюками и приколами.\n\nНажми /start чтоб увидеть изменения, лох!',
-    { parse_mode: 'Markdown' }
-  );
+  const success = await setChatMode(userId, 'rude');
+  
+  if (success) {
+    await ctx.answerCbQuery('✅ Выбран смешной режим');
+    await ctx.editMessageText(
+      '😈 **Режим изменён, бля!**\n\nТеперь я буду с тобой по-пацански разговаривать, с матюками и приколами.\n\nНажми /start чтоб увидеть изменения, лох!',
+      { parse_mode: 'Markdown' }
+    );
+  } else {
+    await ctx.answerCbQuery('❌ Ошибка при смене режима');
+  }
 });
+
 bot.action('back_to_premium', async (ctx) => {
   await ctx.deleteMessage();
   await ctx.reply('⭐ **Премиум меню:**\nВыбери функцию:', premiumMenu);
@@ -895,6 +987,41 @@ bot.on('text', async (ctx) => {
   }
 });
 
+// ==================== ОБРАБОТКА ПЛАТЕЖЕЙ ====================
+bot.action('buy_premium', async (ctx) => {
+  await ctx.answerCbQuery();
+  
+  await ctx.replyWithInvoice({
+    title: '⭐ Премиум-подписка на месяц',
+    description: 'Доступ ко всем премиум-функциям на 30 дней',
+    payload: 'premium_month',
+    provider_token: '',
+    currency: 'XTR',
+    prices: [{ label: 'Премиум', amount: 100 }],
+    start_parameter: 'premium-payment'
+  });
+});
+
+bot.on('pre_checkout_query', async (ctx) => {
+  await ctx.answerPreCheckoutQuery(true);
+});
+
+bot.on('successful_payment', async (ctx) => {
+  const userId = ctx.from.id;
+  
+  await pool.query(
+    'INSERT INTO premium_users (user_id, valid_until, chat_mode) VALUES ($1, NOW() + INTERVAL \'30 days\', $2) ON CONFLICT (user_id) DO UPDATE SET valid_until = NOW() + INTERVAL \'30 days\'',
+    [userId, 'normal']
+  );
+  
+  await ctx.reply(
+    '✅ **Оплата прошла успешно!**\n\n' +
+    '⭐ Премиум-доступ активирован на 30 дней.\n' +
+    'Все премиум функции теперь доступны!',
+    { parse_mode: 'Markdown' }
+  );
+});
+
 // ==================== EXPRESS СЕРВЕР ====================
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -918,7 +1045,7 @@ async function startBot() {
   console.log('✅ Бот запущен и готов к работе!');
   console.log('👀 Открывай Telegram и пиши /start');
   console.log('🎫 Промокод VIP40 - премиум навсегда для 40 человек');
-  console.log('😈 Премиум用户可以 переключать режим общения!');
+  console.log('😈 Premium用户可以 переключать режим общения!');
 }
 
 startBot().catch(err => {
