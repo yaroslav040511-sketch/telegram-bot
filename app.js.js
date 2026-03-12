@@ -1,6 +1,6 @@
 // ==================== НАСТРОЙКИ ====================
 const express = require('express');
-const { Telegraf, Markup, Scenes, session } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const { Pool } = require('pg');
 const dns = require('dns');
 dns.setDefaultResultOrder('ipv4first');
@@ -119,23 +119,21 @@ async function isPremium(userId) {
 // ==================== СОЗДАНИЕ БОТА ====================
 const bot = new Telegraf(token);
 
-// Устанавливаем аватарку бота (команда для BotFather)
-console.log('👤 Не забудь установить аватарку через @BotFather:');
-console.log('   1. Отправь /setuserpic @BotFather');
-console.log('   2. Выбери этого бота');
-console.log('   3. Отправь картинку');
-
 // ==================== КНОПКИ И МЕНЮ ====================
 
 // Главное меню
 const mainMenu = Markup.keyboard([
   ['💰 Добавить доход', '💸 Добавить расход'],
   ['📊 Статистика', '📈 Бюджеты'],
-  ['⭐ Премиум', '❓ Помощь']
+  ['⭐ Премиум', '📋 Мои записи'],
+  ['❓ Помощь']
 ]).resize();
 
-// Кнопки для отмены
-const cancelButton = Markup.keyboard(['❌ Отмена']).resize();
+// Кнопка отмены (возврат в меню)
+const backToMenu = Markup.keyboard(['🔙 В главное меню']).resize();
+
+// Состояния пользователей (чтобы знать, ждем ли мы сумму)
+const userStates = new Map();
 
 // ==================== КОМАНДЫ ====================
 
@@ -194,13 +192,21 @@ bot.help(async (ctx) => {
   await ctx.reply(help, { parse_mode: 'Markdown' });
 });
 
+// Возврат в главное меню
+bot.hears('🔙 В главное меню', async (ctx) => {
+  userStates.delete(ctx.from.id);
+  await ctx.reply('Главное меню:', mainMenu);
+});
+
 // Обработка кнопок
 bot.hears('💰 Добавить доход', async (ctx) => {
-  await ctx.reply('Напиши сумму и описание дохода (например: "50000 зарплата")', cancelButton);
+  userStates.set(ctx.from.id, 'waiting_income');
+  await ctx.reply('Напиши сумму и описание дохода (например: "50000 зарплата")', backToMenu);
 });
 
 bot.hears('💸 Добавить расход', async (ctx) => {
-  await ctx.reply('Напиши сумму и описание расхода (например: "кофе 300" или "-300 такси")', cancelButton);
+  userStates.set(ctx.from.id, 'waiting_expense');
+  await ctx.reply('Напиши сумму и описание расхода (например: "кофе 300" или "-300 такси")', backToMenu);
 });
 
 bot.hears('📊 Статистика', async (ctx) => {
@@ -208,19 +214,44 @@ bot.hears('📊 Статистика', async (ctx) => {
 });
 
 bot.hears('📈 Бюджеты', async (ctx) => {
-  await ctx.reply('🚧 Функция бюджетов в разработке. Скоро появится!');
+  await ctx.reply('🚧 Функция бюджетов в разработке. Скоро появится!', mainMenu);
 });
 
 bot.hears('⭐ Премиум', async (ctx) => {
   await showPremium(ctx);
 });
 
-bot.hears('❓ Помощь', async (ctx) => {
-  ctx.help();
+bot.hears('📋 Мои записи', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    const result = await pool.query(
+      'SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC LIMIT 10',
+      [userId]
+    );
+    
+    if (result.rows.length === 0) {
+      return ctx.reply('📋 У вас пока нет записей', mainMenu);
+    }
+    
+    let message = '📋 **Последние 10 записей:**\n\n';
+    result.rows.forEach((tx, i) => {
+      const emoji = tx.type === 'income' ? '💰' : '💸';
+      const date = new Date(tx.date).toLocaleString('ru-RU');
+      message += `${emoji} **${tx.amount}₽** - ${tx.category}\n`;
+      message += `   📝 ${tx.description}\n`;
+      message += `   🕐 ${date}\n\n`;
+    });
+    
+    await ctx.reply(message, { parse_mode: 'Markdown', ...mainMenu });
+    
+  } catch (err) {
+    console.error('❌ Ошибка получения записей:', err);
+    ctx.reply('❌ Ошибка получения записей', mainMenu);
+  }
 });
 
-bot.hears('❌ Отмена', async (ctx) => {
-  await ctx.reply('Действие отменено', mainMenu);
+bot.hears('❓ Помощь', async (ctx) => {
+  ctx.help();
 });
 
 // СТАТИСТИКА
@@ -235,7 +266,7 @@ async function showStats(ctx, period = 'all') {
   try {
     const userId = ctx.from.id;
     
-    let interval = '100 years';
+    let interval = '9999 days';
     let periodText = 'за всё время';
     
     if (period === 'week') {
@@ -248,6 +279,8 @@ async function showStats(ctx, period = 'all') {
       interval = '365 days';
       periodText = 'за год';
     }
+    
+    console.log(`📊 Stats for user ${userId}, interval: ${interval}`);
     
     // Получаем доходы
     const incomes = await pool.query(`
@@ -277,6 +310,8 @@ async function showStats(ctx, period = 'all') {
       ORDER BY total DESC
     `, [userId, interval]);
     
+    console.log(`📊 Found ${incomes.rows.length} income categories, ${expenses.rows.length} expense categories`);
+    
     const totalIncome = incomes.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
     const totalExpense = expenses.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
     
@@ -288,6 +323,8 @@ async function showStats(ctx, period = 'all') {
         message += `  ${row.category}: ${Number(row.total).toFixed(2)}₽ (${row.count} раз)\n`;
       });
       message += `  **Всего доходов:** ${totalIncome.toFixed(2)}₽\n\n`;
+    } else {
+      message += '💰 **Доходы:** пока нет\n\n';
     }
     
     if (expenses.rows.length > 0) {
@@ -296,6 +333,8 @@ async function showStats(ctx, period = 'all') {
         message += `  ${row.category}: ${Number(row.total).toFixed(2)}₽ (${row.count} раз)\n`;
       });
       message += `  **Всего расходов:** ${totalExpense.toFixed(2)}₽\n\n`;
+    } else {
+      message += '💸 **Расходы:** пока нет\n\n';
     }
     
     const balance = totalIncome - totalExpense;
@@ -314,14 +353,14 @@ async function showStats(ctx, period = 'all') {
     
   } catch (err) {
     console.error('❌ Ошибка статистики:', err);
-    ctx.reply('❌ Ошибка получения статистики');
+    ctx.reply('❌ Ошибка получения статистики: ' + err.message);
   }
 }
 
 // Обработка инлайн-кнопок статистики
 bot.action(/stats_(.+)/, async (ctx) => {
   const period = ctx.match[1];
-  await ctx.deleteMessage(); // Удаляем старое сообщение с кнопками
+  await ctx.deleteMessage();
   await showStats(ctx, period);
 });
 
@@ -381,7 +420,7 @@ async function showPremium(ctx) {
       `• Расширенная статистика\n` +
       `• Экспорт в Excel\n` +
       `• Приоритетная поддержка`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'Markdown', ...mainMenu }
     );
   } else {
     const premiumKeyboard = Markup.inlineKeyboard([
@@ -413,8 +452,8 @@ bot.action('buy_premium', async (ctx) => {
     title: '⭐ Премиум-подписка на месяц',
     description: 'Доступ ко всем премиум-функциям на 30 дней',
     payload: 'premium_month',
-    provider_token: '', // Для Stars оставляем пустым
-    currency: 'XTR', // Telegram Stars
+    provider_token: '',
+    currency: 'XTR',
     prices: [{ label: 'Премиум', amount: 100 }],
     start_parameter: 'premium-payment'
   });
@@ -427,7 +466,6 @@ bot.on('pre_checkout_query', async (ctx) => {
 
 bot.on('successful_payment', async (ctx) => {
   const userId = ctx.from.id;
-  const payment = ctx.message.successful_payment;
   
   // Активируем премиум на 30 дней
   await pool.query(
@@ -439,7 +477,7 @@ bot.on('successful_payment', async (ctx) => {
     '✅ **Оплата прошла успешно!**\n\n' +
     'Премиум-доступ активирован на 30 дней.\n' +
     'Спасибо за поддержку! 🙏',
-    { parse_mode: 'Markdown' }
+    { parse_mode: 'Markdown', ...mainMenu }
   );
 });
 
@@ -448,16 +486,18 @@ bot.on('text', async (ctx) => {
   try {
     const text = ctx.message.text;
     const userId = ctx.from.id;
+    const state = userStates.get(userId);
     
-    // Пропускаем команды и кнопки
+    // Пропускаем команды и кнопки меню
     if (text.startsWith('/') || 
         text === '💰 Добавить доход' || 
         text === '💸 Добавить расход' ||
         text === '📊 Статистика' ||
         text === '📈 Бюджеты' ||
         text === '⭐ Премиум' ||
+        text === '📋 Мои записи' ||
         text === '❓ Помощь' ||
-        text === '❌ Отмена') {
+        text === '🔙 В главное меню') {
       return;
     }
     
@@ -466,22 +506,23 @@ bot.on('text', async (ctx) => {
     // Парсим сумму
     const match = text.match(/(-?\d+[\d\s]*[\d,.]*|\d+[\d\s]*[\d,.]*)/);
     if (!match) {
-      return ctx.reply('❌ Не могу найти сумму. Пример: "500 зарплата" или "кофе 300"');
+      await ctx.reply('❌ Не могу найти сумму. Пример: "500 зарплата" или "кофе 300"', backToMenu);
+      return;
     }
     
     let amount = parseFloat(match[0].replace(/\s/g, '').replace(',', '.'));
     const description = text.replace(match[0], '').trim() || 'без описания';
     
-    // Определяем тип
+    // Определяем тип в зависимости от состояния или текста
     let type = 'expense';
     const incomeKeywords = ['зарплата', 'доход', 'аванс', 'зп', 'перевод', 'премия', 'бонус', 'заработок', 'фриланс'];
     const isIncome = incomeKeywords.some(keyword => text.toLowerCase().includes(keyword));
     
-    if (amount < 0) {
-      type = 'expense';
-      amount = Math.abs(amount);
-    } else if (isIncome) {
+    if (state === 'waiting_income' || isIncome) {
       type = 'income';
+    } else if (state === 'waiting_expense' || amount < 0) {
+      type = 'expense';
+      if (amount < 0) amount = Math.abs(amount);
     } else {
       type = 'expense';
     }
@@ -503,9 +544,13 @@ bot.on('text', async (ctx) => {
       { parse_mode: 'Markdown' }
     );
     
+    // Очищаем состояние и возвращаем в главное меню
+    userStates.delete(userId);
+    await ctx.reply('Что делаем дальше?', mainMenu);
+    
   } catch (err) {
     console.error('❌ Ошибка обработки сообщения:', err);
-    ctx.reply('❌ Произошла ошибка. Попробуй еще раз.');
+    ctx.reply('❌ Произошла ошибка. Попробуй еще раз.', mainMenu);
   }
 });
 
