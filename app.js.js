@@ -249,14 +249,25 @@ const userStates = new Map();
 
 // ==================== КОМАНДЫ ====================
 
-// СТАРТ
+// СТАРТ - ИСПРАВЛЕННАЯ ВЕРСИЯ
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
-  const mode = await getChatMode(userId);
   
-  let welcome;
+  // Принудительно получаем свежий режим из базы
+  const modeResult = await pool.query(
+    'SELECT chat_mode FROM premium_users WHERE user_id = $1',
+    [userId]
+  );
+  
+  let mode = 'normal';
+  if (modeResult.rows.length > 0 && modeResult.rows[0].chat_mode) {
+    mode = modeResult.rows[0].chat_mode;
+  }
+  
+  console.log(`🚀 Старт для user ${userId}, режим: ${mode}`);
+  
   if (mode === 'rude') {
-    welcome = `👋 Здарова, нищеброд!
+    const welcome = `👋 Здарова, нищеброд!
 
 Я твой финансовый помощник, бля. Буду считать твои копейки, чтоб ты не проебывал всё до зарплаты.
 
@@ -268,8 +279,9 @@ bot.start(async (ctx) => {
 🎫 Промокод VIP40 - ебашь сюда, получишь премиум навечно (пока я не передумал)
 
 ⬇️ Жми кнопки, лох ⬇️`;
+    await ctx.reply(welcome);
   } else {
-    welcome = `👋 Привет! Я твой финансовый помощник!
+    const welcome = `👋 Привет! Я твой финансовый помощник!
 
 📝 Как записывать:
 • "500 зарплата" - доход
@@ -279,13 +291,12 @@ bot.start(async (ctx) => {
 🎫 Промокод VIP40 - премиум навсегда для 40 человек!
 
 ⬇️ Используй кнопки ниже ⬇️`;
+    await ctx.reply(welcome, { parse_mode: 'Markdown' });
   }
   
-  await ctx.reply(welcome, { parse_mode: 'Markdown' });
   await ctx.reply('Главное меню:', mainMenu);
   console.log(`👋 Новый пользователь: ${ctx.from.id} (@${ctx.from.username || 'no username'})`);
 });
-
 // ПОМОЩЬ
 bot.command('help', async (ctx) => {
   await showHelp(ctx);
@@ -531,13 +542,13 @@ bot.hears('😈 Режим общения', async (ctx) => {
   );
 });
 
-// Обработка выбора режима
+// Обработка выбора режима - ИСПРАВЛЕНО
 bot.action('mode_normal', async (ctx) => {
   const userId = ctx.from.id;
   await setChatMode(userId, 'normal');
   await ctx.answerCbQuery('✅ Выбран обычный режим');
   await ctx.editMessageText(
-    '😇 **Режим изменён**\n\nТеперь я буду общаться с тобой вежливо и культурно.\n\nНапиши /start чтобы увидеть изменения!',
+    '😇 **Режим изменён**\n\nТеперь я буду общаться с тобой вежливо и культурно.\n\nНажми /start чтобы увидеть изменения!',
     { parse_mode: 'Markdown' }
   );
 });
@@ -547,11 +558,10 @@ bot.action('mode_rude', async (ctx) => {
   await setChatMode(userId, 'rude');
   await ctx.answerCbQuery('✅ Выбран смешной режим');
   await ctx.editMessageText(
-    '😈 **Режим изменён, бля!**\n\nТеперь я буду с тобой по-пацански разговаривать, с матюками и приколами.\n\nЕбашь /start чтоб увидеть изменения, лох!',
+    '😈 **Режим изменён, бля!**\n\nТеперь я буду с тобой по-пацански разговаривать, с матюками и приколами.\n\nНажми /start чтоб увидеть изменения, лох!',
     { parse_mode: 'Markdown' }
   );
 });
-
 bot.action('back_to_premium', async (ctx) => {
   await ctx.deleteMessage();
   await ctx.reply('⭐ **Премиум меню:**\nВыбери функцию:', premiumMenu);
