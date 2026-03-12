@@ -48,6 +48,7 @@ async function initDatabase() {
       CREATE TABLE IF NOT EXISTS premium_users (
         user_id BIGINT PRIMARY KEY,
         valid_until TIMESTAMP NOT NULL,
+        chat_mode VARCHAR(20) DEFAULT 'normal', -- normal или rude
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
@@ -71,43 +72,6 @@ async function initDatabase() {
         user_id BIGINT NOT NULL,
         promocode_id INTEGER REFERENCES promocodes(id),
         used_at TIMESTAMP DEFAULT NOW()
-      )
-    `);
-    
-    // Таблица целей (премиум)
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS goals (
-        id SERIAL PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        name VARCHAR(100) NOT NULL,
-        target_amount DECIMAL(10,2) NOT NULL,
-        current_amount DECIMAL(10,2) DEFAULT 0,
-        deadline DATE,
-        completed BOOLEAN DEFAULT false,
-        created_at TIMESTAMP DEFAULT NOW()
-      )
-    `);
-    
-    // Таблица челленджей (премиум)
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS challenges (
-        id SERIAL PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        name VARCHAR(100) NOT NULL,
-        start_date DATE NOT NULL,
-        end_date DATE NOT NULL,
-        completed BOOLEAN DEFAULT false,
-        created_at TIMESTAMP DEFAULT NOW()
-      )
-    `);
-    
-    // Таблица достижений (премиум)
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS achievements (
-        id SERIAL PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        name VARCHAR(100) NOT NULL,
-        earned_at TIMESTAMP DEFAULT NOW()
       )
     `);
     
@@ -172,6 +136,34 @@ async function isPremium(userId) {
   }
 }
 
+// ==================== ПОЛУЧЕНИЕ РЕЖИМА ЧАТА ====================
+async function getChatMode(userId) {
+  try {
+    const result = await pool.query(
+      'SELECT chat_mode FROM premium_users WHERE user_id = $1',
+      [userId]
+    );
+    return result.rows[0]?.chat_mode || 'normal';
+  } catch (err) {
+    console.error('Ошибка получения режима:', err);
+    return 'normal';
+  }
+}
+
+// ==================== УСТАНОВКА РЕЖИМА ЧАТА ====================
+async function setChatMode(userId, mode) {
+  try {
+    await pool.query(
+      'UPDATE premium_users SET chat_mode = $1 WHERE user_id = $2',
+      [mode, userId]
+    );
+    return true;
+  } catch (err) {
+    console.error('Ошибка установки режима:', err);
+    return false;
+  }
+}
+
 // ==================== ПРОВЕРКА ПРЕМИУМ ДЛЯ КОМАНД ====================
 async function checkPremium(ctx, commandName) {
   const userId = ctx.from.id;
@@ -185,7 +177,7 @@ async function checkPremium(ctx, commandName) {
       `• 🎯 Цели и накопления\n` +
       `• 🤖 AI-советы\n` +
       `• 🏆 Челленджи и достижения\n` +
-      `• 📅 Умные напоминания\n\n` +
+      `• 😈 Смешной режим с матом\n\n` +
       `💎 **100 Telegram Stars в месяц**\n` +
       `🎫 Промокод VIP40 - премиум навсегда для 40 человек!`,
       { parse_mode: 'Markdown' }
@@ -195,12 +187,24 @@ async function checkPremium(ctx, commandName) {
   return true;
 }
 
+// ==================== ГЕНЕРАЦИЯ ТЕКСТА В ЗАВИСИМОСТИ ОТ РЕЖИМА ====================
+async function formatResponse(ctx, normalText, rudeText) {
+  const userId = ctx.from.id;
+  const mode = await getChatMode(userId);
+  
+  if (mode === 'rude') {
+    return rudeText;
+  } else {
+    return normalText;
+  }
+}
+
 // ==================== АКТИВАЦИЯ ПРЕМИУМ ====================
 async function activatePremium(userId, days = 9999) {
   try {
     await pool.query(
-      'INSERT INTO premium_users (user_id, valid_until) VALUES ($1, NOW() + $2::interval) ON CONFLICT (user_id) DO UPDATE SET valid_until = NOW() + $2::interval',
-      [userId, `${days} days`]
+      'INSERT INTO premium_users (user_id, valid_until, chat_mode) VALUES ($1, NOW() + $2::interval, $3) ON CONFLICT (user_id) DO UPDATE SET valid_until = NOW() + $2::interval',
+      [userId, `${days} days`, 'normal']
     );
     return true;
   } catch (err) {
@@ -222,13 +226,20 @@ const mainMenu = Markup.keyboard([
   ['❓ Помощь']
 ]).resize();
 
-// Премиум меню (платные функции)
+// Премиум меню
 const premiumMenu = Markup.keyboard([
   ['📈 Графики', '🎯 Цели'],
   ['🤖 AI совет', '🏆 Челленджи'],
-  ['📅 Напоминания', '⭐ Статус'],
+  ['😈 Режим общения', '⭐ Статус'],
   ['🔙 В главное меню']
 ]).resize();
+
+// Меню выбора режима
+const modeMenu = Markup.inlineKeyboard([
+  [Markup.button.callback('😇 Обычный (вежливый)', 'mode_normal')],
+  [Markup.button.callback('😈 Смешной (с матом)', 'mode_rude')],
+  [Markup.button.callback('🔙 Назад', 'back_to_premium')]
+]);
 
 // Кнопка отмены
 const backToMenu = Markup.keyboard(['🔙 В главное меню']).resize();
@@ -240,25 +251,35 @@ const userStates = new Map();
 
 // СТАРТ
 bot.start(async (ctx) => {
-  const welcome = `
-👋 Привет! Я твой **финансовый помощник**!
+  const userId = ctx.from.id;
+  const mode = await getChatMode(userId);
+  
+  let welcome;
+  if (mode === 'rude') {
+    welcome = `👋 Здарова, нищеброд!
 
-📝 **Бесплатные функции:**
-• Запись доходов/расходов
-• Просмотр последних записей
-• Базовая статистика
+Я твой финансовый помощник, бля. Буду считать твои копейки, чтоб ты не проебывал всё до зарплаты.
 
-⭐ **Премиум функции:**
-• 📈 Графики и диаграммы
-• 🎯 Цели и накопления
-• 🤖 AI-советы по финансам
-• 🏆 Челленджи и достижения
-• 📅 Умные напоминания
+📝 Че по функциям:
+• Пиши "5000 зарплата" - хуй знает, может хватит до получки
+• Пиши "-300 кофе" - опять проебал бабки на хуйню
+• Пиши "такси 500" - пешком ходи, пидор!
 
-🎫 **Промокод VIP40** - премиум навсегда для 40 человек!
+🎫 Промокод VIP40 - ебашь сюда, получишь премиум навечно (пока я не передумал)
 
-⬇️ Используй кнопки ниже ⬇️
-  `;
+⬇️ Жми кнопки, лох ⬇️`;
+  } else {
+    welcome = `👋 Привет! Я твой финансовый помощник!
+
+📝 Как записывать:
+• "500 зарплата" - доход
+• "кофе 300" - расход
+• "такси 500" - расход
+
+🎫 Промокод VIP40 - премиум навсегда для 40 человек!
+
+⬇️ Используй кнопки ниже ⬇️`;
+  }
   
   await ctx.reply(welcome, { parse_mode: 'Markdown' });
   await ctx.reply('Главное меню:', mainMenu);
@@ -271,28 +292,29 @@ bot.command('help', async (ctx) => {
 });
 
 async function showHelp(ctx) {
-  const help = `
-📚 **Доступные команды:**
-
-🆓 **Бесплатные:**
-• Просто пиши сумму и описание
-  Пример: "500 зарплата"
-  Пример: "кофе 300"
-• /stats - базовая статистика
-• /my - последние записи
-
-⭐ **Премиум:**
-• /graph - графики
-• /goal - цели
-• /advice - AI совет
-• /challenge - челленджи
-• /remind - напоминания
-
-🎫 **Промокоды:**
-/promo - активировать промокод
-  `;
+  const userId = ctx.from.id;
+  const mode = await getChatMode(userId);
   
-  await ctx.reply(help, { parse_mode: 'Markdown' });
+  if (mode === 'rude') {
+    await ctx.reply(`❓ Че надо, бля?
+
+Команды:
+/start - хули, заново начать
+/stats - смотри куда проебал бабки
+/my - последние траты (порыдать)
+/premium - узнай как стать богаче
+
+Промокод: VIP40 (ебашь, пока не закрыли)`);
+  } else {
+    await ctx.reply(`📚 Доступные команды:
+
+/stats - статистика
+/my - последние записи
+/premium - премиум функции
+/promo - активировать промокод
+
+🎫 Промокод VIP40 - премиум навсегда!`);
+  }
 }
 
 // Возврат в главное меню
@@ -306,13 +328,27 @@ bot.hears('🔙 В главное меню', async (ctx) => {
 // Добавить доход
 bot.hears('💰 Добавить доход', async (ctx) => {
   userStates.set(ctx.from.id, 'waiting_income');
-  await ctx.reply('Напиши сумму и описание дохода (например: "50000 зарплата")', backToMenu);
+  const userId = ctx.from.id;
+  const mode = await getChatMode(userId);
+  
+  if (mode === 'rude') {
+    await ctx.reply('Пиши сумму и че за бабки (например: "50000 зарплата")', backToMenu);
+  } else {
+    await ctx.reply('Напиши сумму и описание дохода (например: "50000 зарплата")', backToMenu);
+  }
 });
 
 // Добавить расход
 bot.hears('💸 Добавить расход', async (ctx) => {
   userStates.set(ctx.from.id, 'waiting_expense');
-  await ctx.reply('Напиши сумму и описание расхода (например: "кофе 300" или "-300 такси")', backToMenu);
+  const userId = ctx.from.id;
+  const mode = await getChatMode(userId);
+  
+  if (mode === 'rude') {
+    await ctx.reply('Пиши на что проебал бабки (например: "кофе 300" или "-300 такси")', backToMenu);
+  } else {
+    await ctx.reply('Напиши сумму и описание расхода (например: "кофе 300" или "-300 такси")', backToMenu);
+  }
 });
 
 // Статистика (бесплатно)
@@ -327,6 +363,7 @@ bot.command('stats', async (ctx) => {
 async function showBasicStats(ctx) {
   try {
     const userId = ctx.from.id;
+    const mode = await getChatMode(userId);
     
     const incomes = await pool.query(`
       SELECT 
@@ -350,21 +387,41 @@ async function showBasicStats(ctx) {
     const totalIncome = parseFloat(incomes.rows[0]?.total || 0);
     const totalExpense = expenses.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
     
-    let message = `📊 **Базовая статистика:**\n\n`;
-    message += `💰 Доходы: ${totalIncome.toFixed(2)}₽\n`;
-    message += `💸 Расходы: ${totalExpense.toFixed(2)}₽\n`;
-    message += `💵 Баланс: ${(totalIncome - totalExpense).toFixed(2)}₽\n\n`;
-    
-    if (expenses.rows.length > 0) {
-      message += '📌 **Топ категории:**\n';
-      expenses.rows.forEach(row => {
-        message += `  ${row.category}: ${parseFloat(row.total).toFixed(2)}₽\n`;
-      });
+    if (mode === 'rude') {
+      let message = `📊 Смотри сюда, нищеброд, куда ты проебал бабки:\n\n`;
+      message += `💰 Заработал: ${totalIncome.toFixed(0)}₽\n`;
+      message += `💸 Проебал: ${totalExpense.toFixed(0)}₽\n`;
+      message += `💵 Осталось: ${(totalIncome - totalExpense).toFixed(0)}₽\n\n`;
+      
+      if (expenses.rows.length > 0) {
+        message += '📌 Куда улетели бабки:\n';
+        expenses.rows.forEach(row => {
+          let comment = '';
+          if (row.category.includes('🍔 Еда')) comment = '(много жрешь, бля!)';
+          else if (row.category.includes('🚗 Транспорт')) comment = '(пешком ходи, пидор!)';
+          else if (row.category.includes('🎮 Развлечения')) comment = '(хватит дрочить в танки!)';
+          message += `  ${row.category}: ${parseFloat(row.total).toFixed(0)}₽ ${comment}\n`;
+        });
+      }
+      
+      message += `\n⭐ Хочешь больше? Премиум дает графики, цели и смешной режим!`;
+      await ctx.reply(message);
+    } else {
+      let message = `📊 **Базовая статистика:**\n\n`;
+      message += `💰 Доходы: ${totalIncome.toFixed(0)}₽\n`;
+      message += `💸 Расходы: ${totalExpense.toFixed(0)}₽\n`;
+      message += `💵 Баланс: ${(totalIncome - totalExpense).toFixed(0)}₽\n\n`;
+      
+      if (expenses.rows.length > 0) {
+        message += '📌 **Топ категории:**\n';
+        expenses.rows.forEach(row => {
+          message += `  ${row.category}: ${parseFloat(row.total).toFixed(0)}₽\n`;
+        });
+      }
+      
+      message += `\n⭐ Хочешь больше? Премиум дает графики, цели и AI-советы!`;
+      await ctx.reply(message, { parse_mode: 'Markdown' });
     }
-    
-    message += `\n⭐ **Хочешь больше?** Премиум дает графики, цели и AI-советы!`;
-    
-    await ctx.reply(message, { parse_mode: 'Markdown' });
     
   } catch (err) {
     console.error('❌ Ошибка статистики:', err);
@@ -384,16 +441,23 @@ bot.command('my', async (ctx) => {
 async function showMyRecords(ctx) {
   try {
     const userId = ctx.from.id;
+    const mode = await getChatMode(userId);
+    
     const result = await pool.query(
       'SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC LIMIT 10',
       [userId]
     );
     
     if (result.rows.length === 0) {
-      return ctx.reply('📋 У вас пока нет записей', mainMenu);
+      if (mode === 'rude') {
+        return ctx.reply('📋 У тебя ещё нет записей, лох! Добавь что-нибудь', mainMenu);
+      } else {
+        return ctx.reply('📋 У вас пока нет записей', mainMenu);
+      }
     }
     
-    let message = '📋 **Последние 10 записей:**\n\n';
+    let message = mode === 'rude' ? '📋 Последние 10 проёбов:\n\n' : '📋 **Последние 10 записей:**\n\n';
+    
     result.rows.forEach((tx, i) => {
       const emoji = tx.type === 'income' ? '💰' : '💸';
       const date = new Date(tx.date).toLocaleString('ru-RU');
@@ -442,7 +506,7 @@ async function showPremiumInfo(ctx) {
     `• 🎯 Цели и накопления\n` +
     `• 🤖 Персональные AI-советы\n` +
     `• 🏆 Челленджи и достижения\n` +
-    `• 📅 Умные напоминания\n\n` +
+    `• 😈 Выбор режима общения (с матом или без)\n\n` +
     `**Стоимость:** 100 Telegram Stars в месяц\n\n` +
     `🎫 **Промокод VIP40**\n` +
     `Осталось активаций: ${remaining}/40\n` +
@@ -451,177 +515,54 @@ async function showPremiumInfo(ctx) {
   );
 }
 
-// Графики (премиум)
-bot.hears('📈 Графики', async (ctx) => {
+// Режим общения (новая функция)
+bot.hears('😈 Режим общения', async (ctx) => {
   const userId = ctx.from.id;
-  if (!await checkPremium(ctx, 'graph')) return;
+  if (!await checkPremium(ctx, 'mode')) return;
   
-  // Здесь будет код для генерации графиков
+  const currentMode = await getChatMode(userId);
+  const modeText = currentMode === 'rude' ? 'смешной (с матом)' : 'обычный (вежливый)';
+  
   await ctx.reply(
-    `📈 **Функция графиков**\n\n` +
-    `Скоро здесь будут:\n` +
-    `• Круговая диаграмма расходов\n` +
-    `• График трат по дням\n` +
-    `• Сравнение доходов/расходов\n\n` +
-    `Разработка в процессе... 🚀`
+    `😈 **Режим общения**\n\n` +
+    `Сейчас выбран: ${modeText}\n\n` +
+    `Выбери как я буду с тобой разговаривать:`,
+    modeMenu
   );
 });
 
-// Цели (премиум)
-bot.hears('🎯 Цели', async (ctx) => {
+// Обработка выбора режима
+bot.action('mode_normal', async (ctx) => {
   const userId = ctx.from.id;
-  if (!await checkPremium(ctx, 'goals')) return;
-  
-  userStates.set(ctx.from.id, 'waiting_goal');
-  await ctx.reply(
-    '🎯 **Создание цели**\n\n' +
-    'Напиши в формате:\n' +
-    'цель:Название,сумма,дата\n\n' +
-    'Пример: цель:iPhone 15,100000,2024-12-31',
-    backToMenu
-  );
-});
-// AI совет (премиум) - ИСПРАВЛЕННАЯ ВЕРСИЯ (берет все данные)
-bot.hears('🤖 AI совет', async (ctx) => {
-  const userId = ctx.from.id;
-  if (!await checkPremium(ctx, 'advice')) return;
-  
-  try {
-    console.log(`🤖 AI анализ для user ${userId} - начинаем...`);
-    
-    // Получаем ВСЕ расходы пользователя (без ограничения по времени)
-    const expenses = await pool.query(`
-      SELECT category, SUM(amount) as total, COUNT(*) as count
-      FROM transactions 
-      WHERE user_id = $1 AND type = 'expense'
-      GROUP BY category
-      ORDER BY total DESC
-    `, [userId]);
-    
-    console.log(`📊 Найдено расходов: ${expenses.rows.length}`);
-    
-    // Получаем ВСЕ доходы
-    const incomes = await pool.query(`
-      SELECT SUM(amount) as total
-      FROM transactions 
-      WHERE user_id = $1 AND type = 'income'
-    `, [userId]);
-    
-    const totalIncome = parseFloat(incomes.rows[0]?.total || 0);
-    const totalExpense = expenses.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
-    
-    console.log(`💰 Доходы: ${totalIncome}, Расходы: ${totalExpense}`);
-    
-    // Проверяем, есть ли данные для анализа
-    if (expenses.rows.length === 0 || totalExpense === 0) {
-      console.log('❌ Нет данных для анализа');
-      
-      // Проверим, есть ли вообще транзакции
-      const anyTx = await pool.query(
-        'SELECT COUNT(*) FROM transactions WHERE user_id = $1',
-        [userId]
-      );
-      
-      if (parseInt(anyTx.rows[0].count) > 0) {
-        await ctx.reply(
-          '🤖 **AI-анализ:**\n\n' +
-          `📊 Найдено транзакций: ${anyTx.rows[0].count}\n` +
-          '❌ Но среди них нет расходов (только доходы).\n' +
-          'Добавьте расходы, например: "кофе 300", "такси 500"'
-        );
-      } else {
-        await ctx.reply(
-          '🤖 **AI-анализ:**\n\n' +
-          '📊 Пока нет данных для анализа.\n' +
-          'Добавьте траты, чтобы получить персональные советы!\n\n' +
-          'Примеры: "кофе 300", "такси 500", "продукты 2000"'
-        );
-      }
-      return;
-    }
-    
-    // Формируем анализ
-    let advice = '🤖 **AI-анализ ваших финансов:**\n\n';
-    
-    if (totalIncome > 0) {
-      const savingsRate = ((totalIncome - totalExpense) / totalIncome * 100).toFixed(1);
-      advice += `💰 **Доходы:** ${totalIncome.toFixed(0)}₽\n`;
-      advice += `💸 **Расходы:** ${totalExpense.toFixed(0)}₽\n`;
-      advice += `📊 **Накопления:** ${(totalIncome - totalExpense).toFixed(0)}₽ (${savingsRate}%)\n\n`;
-    }
-    
-    advice += '📌 **Анализ расходов:**\n';
-    
-    expenses.rows.forEach(row => {
-      const amount = parseFloat(row.total);
-      const percent = ((amount / totalExpense) * 100).toFixed(1);
-      
-      advice += `\n${row.category}: ${amount.toFixed(0)}₽ (${percent}%)\n`;
-      
-      if (row.category.includes('🍔 Еда') && amount > 10000) {
-        advice += `   💡 Много на еду! Готовь дома чаще\n`;
-      }
-      if (row.category.includes('🚗 Транспорт') && amount > 5000) {
-        advice += `   💡 Дорогой транспорт - может проездной?\n`;
-      }
-      if (row.category.includes('🎮 Развлечения') && amount > 5000) {
-        advice += `   💡 Много на развлечения - есть бесплатные варианты?\n`;
-      }
-    });
-    
-    advice += '\n🎯 **Итог:**\n';
-    if (totalIncome - totalExpense > 0) {
-      advice += `✅ Вы в плюсе! Откладывайте ${((totalIncome - totalExpense) * 0.2).toFixed(0)}₽ в копилку`;
-    } else {
-      advice += '⚠️ Вы тратите больше, чем зарабатываете! Срочно сокращайте расходы';
-    }
-    
-    await ctx.reply(advice);
-    
-  } catch (err) {
-    console.error('❌ Ошибка AI анализа:', err);
-    await ctx.reply('❌ Ошибка при анализе данных');
-  }
-});
-// Челленджи (премиум)
-bot.hears('🏆 Челленджи', async (ctx) => {
-  const userId = ctx.from.id;
-  if (!await checkPremium(ctx, 'challenges')) return;
-  
-  const challengesKeyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('🚫 Неделя без кофе', 'challenge_nocoffee')],
-    [Markup.button.callback('🍔 Месяц без фастфуда', 'challenge_nofastfood')],
-    [Markup.button.callback('💰 Накопить 5000₽', 'challenge_save')]
-  ]);
-  
-  await ctx.reply(
-    '🏆 **Доступные челленджи:**\n\n' +
-    '• 🚫 Неделя без кофе\n' +
-    '• 🍔 Месяц без фастфуда\n' +
-    '• 💰 Накопить 5000₽ за неделю\n\n' +
-    'Выбери челлендж:',
-    challengesKeyboard
+  await setChatMode(userId, 'normal');
+  await ctx.answerCbQuery('✅ Выбран обычный режим');
+  await ctx.editMessageText(
+    '😇 **Режим изменён**\n\nТеперь я буду общаться с тобой вежливо и культурно.\n\nНапиши /start чтобы увидеть изменения!',
+    { parse_mode: 'Markdown' }
   );
 });
 
-// Напоминания (премиум)
-bot.hears('📅 Напоминания', async (ctx) => {
+bot.action('mode_rude', async (ctx) => {
   const userId = ctx.from.id;
-  if (!await checkPremium(ctx, 'reminders')) return;
-  
-  await ctx.reply(
-    '📅 **Напоминания**\n\n' +
-    'Функция в разработке. Здесь можно будет настроить:\n' +
-    '• Ежедневный отчет о тратах\n' +
-    '• Напоминания о регулярных платежах\n' +
-    '• Уведомления о превышении бюджета'
+  await setChatMode(userId, 'rude');
+  await ctx.answerCbQuery('✅ Выбран смешной режим');
+  await ctx.editMessageText(
+    '😈 **Режим изменён, бля!**\n\nТеперь я буду с тобой по-пацански разговаривать, с матюками и приколами.\n\nЕбашь /start чтоб увидеть изменения, лох!',
+    { parse_mode: 'Markdown' }
   );
+});
+
+bot.action('back_to_premium', async (ctx) => {
+  await ctx.deleteMessage();
+  await ctx.reply('⭐ **Премиум меню:**\nВыбери функцию:', premiumMenu);
 });
 
 // Статус премиум
 bot.hears('⭐ Статус', async (ctx) => {
   const userId = ctx.from.id;
   const premium = await isPremium(userId);
+  const mode = await getChatMode(userId);
+  const modeText = mode === 'rude' ? 'смешной (с матом)' : 'обычный (вежливый)';
   
   if (premium) {
     const result = await pool.query('SELECT valid_until FROM premium_users WHERE user_id = $1', [userId]);
@@ -630,6 +571,7 @@ bot.hears('⭐ Статус', async (ctx) => {
     await ctx.reply(
       `⭐ **Премиум статус:** АКТИВЕН\n\n` +
       `✅ Действует до: ${validUntil}\n` +
+      `✅ Режим общения: ${modeText}\n` +
       `✅ Все премиум функции доступны`,
       { parse_mode: 'Markdown' }
     );
@@ -642,15 +584,107 @@ bot.hears('⭐ Статус', async (ctx) => {
   }
 });
 
+// AI совет (премиум)
+bot.hears('🤖 AI совет', async (ctx) => {
+  const userId = ctx.from.id;
+  if (!await checkPremium(ctx, 'advice')) return;
+  const mode = await getChatMode(userId);
+  
+  try {
+    const expenses = await pool.query(`
+      SELECT category, SUM(amount) as total
+      FROM transactions 
+      WHERE user_id = $1 AND type = 'expense'
+      GROUP BY category
+      ORDER BY total DESC
+    `, [userId]);
+    
+    const incomes = await pool.query(`
+      SELECT SUM(amount) as total
+      FROM transactions 
+      WHERE user_id = $1 AND type = 'income'
+    `, [userId]);
+    
+    const totalIncome = parseFloat(incomes.rows[0]?.total || 0);
+    const totalExpense = expenses.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
+    
+    if (expenses.rows.length === 0) {
+      if (mode === 'rude') {
+        await ctx.reply('🤖 Ебать, у тебя даже трат нет! Живёшь на халяву или бомжуешь? Добавь что-нибудь, лох!');
+      } else {
+        await ctx.reply('🤖 У вас пока нет данных для анализа. Добавьте несколько трат!');
+      }
+      return;
+    }
+    
+    if (mode === 'rude') {
+      let advice = `🤖 Сейчас я, бля, посмотрю твои траты...\n\n`;
+      
+      expenses.rows.forEach(row => {
+        const amount = parseFloat(row.total);
+        if (row.category.includes('🍔 Еда') && amount > 10000) {
+          advice += `💡 О, ебать! Ты проебал ${amount.toFixed(0)}₽ на жратву! Иди готовь сам, пидор, а не в рестики ходи!\n\n`;
+        } else if (row.category.includes('🚗 Транспорт') && amount > 5000) {
+          advice += `💡 Такси на ${amount.toFixed(0)}₽ - пешком ходи, лох! Маршрутка дешевле, бля!\n\n`;
+        } else if (row.category.includes('🎮 Развлечения') && amount > 5000) {
+          advice += `💡 ${amount.toFixed(0)}₽ на игры? Хватит дрочить, иди работай!\n\n`;
+        }
+      });
+      
+      advice += `🎯 Короче, экономить надо, пидор. Ща посчитал - мог бы ${(totalExpense * 0.2).toFixed(0)}₽ сэкономить, если б не был лохом!`;
+      
+      await ctx.reply(advice);
+    } else {
+      let advice = `🤖 **AI-анализ ваших финансов:**\n\n`;
+      
+      if (totalIncome > 0) {
+        advice += `💰 Доход: ${totalIncome.toFixed(0)}₽\n`;
+        advice += `💸 Расход: ${totalExpense.toFixed(0)}₽\n`;
+        advice += `📊 Накопления: ${(totalIncome - totalExpense).toFixed(0)}₽\n\n`;
+      }
+      
+      advice += `📌 **Рекомендации:**\n`;
+      expenses.rows.forEach(row => {
+        const amount = parseFloat(row.total);
+        if (row.category.includes('🍔 Еда') && amount > 10000) {
+          advice += `• Постарайтесь сократить расходы на еду, готовьте дома чаще\n`;
+        } else if (row.category.includes('🚗 Транспорт') && amount > 5000) {
+          advice += `• Рассмотрите возможность использования общественного транспорта\n`;
+        }
+      });
+      
+      await ctx.reply(advice);
+    }
+    
+  } catch (err) {
+    console.error('❌ Ошибка AI анализа:', err);
+    ctx.reply('❌ Ошибка при анализе данных');
+  }
+});
+
 // ==================== ПРОМОКОДЫ ====================
 bot.hears('🎫 Промокод', async (ctx) => {
   userStates.set(ctx.from.id, 'waiting_promo');
-  await ctx.reply('🎫 Введите промокод:', backToMenu);
+  const userId = ctx.from.id;
+  const mode = await getChatMode(userId);
+  
+  if (mode === 'rude') {
+    await ctx.reply('🎫 Вводи промокод, лох! (VIP40 например)', backToMenu);
+  } else {
+    await ctx.reply('🎫 Введите промокод:', backToMenu);
+  }
 });
 
 bot.command('promo', async (ctx) => {
   userStates.set(ctx.from.id, 'waiting_promo');
-  await ctx.reply('🎫 Введите промокод:', backToMenu);
+  const userId = ctx.from.id;
+  const mode = await getChatMode(userId);
+  
+  if (mode === 'rude') {
+    await ctx.reply('🎫 Вводи промокод, лох! (VIP40 например)', backToMenu);
+  } else {
+    await ctx.reply('🎫 Введите промокод:', backToMenu);
+  }
 });
 
 async function activatePromo(userId, promoCode) {
@@ -711,6 +745,7 @@ bot.on('text', async (ctx) => {
     const text = ctx.message.text;
     const userId = ctx.from.id;
     const state = userStates.get(userId);
+    const mode = await getChatMode(userId);
     
     // Пропускаем команды и кнопки меню
     if (text.startsWith('/') || 
@@ -726,7 +761,7 @@ bot.on('text', async (ctx) => {
         text === '🎯 Цели' ||
         text === '🤖 AI совет' ||
         text === '🏆 Челленджи' ||
-        text === '📅 Напоминания' ||
+        text === '😈 Режим общения' ||
         text === '⭐ Статус') {
       return;
     }
@@ -759,9 +794,17 @@ bot.on('text', async (ctx) => {
           [userId, name, amount, date]
         );
         
-        await ctx.reply(`✅ Цель "${name}" создана! Удачи! 🎯`);
+        if (mode === 'rude') {
+          await ctx.reply(`✅ Цель "${name}" создана! Не проеби бабки, пидор! 🎯`);
+        } else {
+          await ctx.reply(`✅ Цель "${name}" создана! Удачи! 🎯`);
+        }
       } catch (err) {
-        await ctx.reply('❌ Неправильный формат. Используй: цель:Название,сумма,дата');
+        if (mode === 'rude') {
+          await ctx.reply('❌ Неправильно написал, лох! Используй: цель:Название,сумма,дата');
+        } else {
+          await ctx.reply('❌ Неправильный формат. Используй: цель:Название,сумма,дата');
+        }
       }
       
       userStates.delete(userId);
@@ -774,7 +817,11 @@ bot.on('text', async (ctx) => {
     
     const match = text.match(/(-?\d+[\d\s]*[\d,.]*|\d+[\d\s]*[\d,.]*)/);
     if (!match) {
-      await ctx.reply('❌ Не могу найти сумму. Пример: "500 зарплата" или "кофе 300"', backToMenu);
+      if (mode === 'rude') {
+        await ctx.reply('❌ Где сумма, лох? Пример: "500 зарплата" или "кофе 300"', backToMenu);
+      } else {
+        await ctx.reply('❌ Не могу найти сумму. Пример: "500 зарплата" или "кофе 300"', backToMenu);
+      }
       return;
     }
     
@@ -804,11 +851,30 @@ bot.on('text', async (ctx) => {
     console.log(`✅ Сохранено: user=${userId}, amount=${amount}, category=${category}, type=${type}`);
     
     const emoji = type === 'income' ? '💰' : '💸';
-    await ctx.reply(
-      `${emoji} **Записано:** ${type === 'income' ? 'доход' : 'расход'} ${amount}₽\n` +
-      `📌 **Категория:** ${category}`,
-      { parse_mode: 'Markdown' }
-    );
+    
+    if (mode === 'rude') {
+      if (type === 'income') {
+        await ctx.reply(
+          `${emoji} **Записал бабки:** ${amount}₽\n` +
+          `📌 Категория: ${category}\n\n` +
+          `Не проеби всё в первый же день, пидор!`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        await ctx.reply(
+          `${emoji} **Записал твой проёб:** ${amount}₽\n` +
+          `📌 Категория: ${category}\n\n` +
+          `Скоро без штанов останешься, бля!`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    } else {
+      await ctx.reply(
+        `${emoji} **Записано:** ${type === 'income' ? 'доход' : 'расход'} ${amount}₽\n` +
+        `📌 **Категория:** ${category}`,
+        { parse_mode: 'Markdown' }
+      );
+    }
     
     userStates.delete(userId);
     await ctx.reply('Что делаем дальше?', mainMenu);
@@ -817,68 +883,6 @@ bot.on('text', async (ctx) => {
     console.error('❌ Ошибка обработки сообщения:', err);
     ctx.reply('❌ Произошла ошибка. Попробуй еще раз.', mainMenu);
   }
-});
-
-// ==================== ОБРАБОТКА КНОПОК ЧЕЛЛЕНДЖЕЙ ====================
-bot.action(/challenge_(.+)/, async (ctx) => {
-  const userId = ctx.from.id;
-  if (!await isPremium(userId)) {
-    await ctx.answerCbQuery('❌ Это премиум функция!', { show_alert: true });
-    return;
-  }
-  
-  const challenge = ctx.match[1];
-  let response = '';
-  
-  switch(challenge) {
-    case 'nocoffee':
-      response = '✅ Челлендж "Неделя без кофе" активирован! Удачи! ☕🚫';
-      break;
-    case 'nofastfood':
-      response = '✅ Челлендж "Месяц без фастфуда" активирован! Будь здоров! 🍔🚫';
-      break;
-    case 'save':
-      response = '✅ Челлендж "Накопить 5000₽ за неделю" активирован! Вперед! 💰';
-      break;
-  }
-  
-  await ctx.answerCbQuery();
-  await ctx.reply(response);
-});
-
-// ==================== ПОКУПКА ПРЕМИУМ ====================
-bot.action('buy_premium', async (ctx) => {
-  await ctx.answerCbQuery();
-  
-  await ctx.replyWithInvoice({
-    title: '⭐ Премиум-подписка на месяц',
-    description: 'Доступ ко всем премиум-функциям на 30 дней',
-    payload: 'premium_month',
-    provider_token: '',
-    currency: 'XTR',
-    prices: [{ label: 'Премиум', amount: 100 }],
-    start_parameter: 'premium-payment'
-  });
-});
-
-bot.on('pre_checkout_query', async (ctx) => {
-  await ctx.answerPreCheckoutQuery(true);
-});
-
-bot.on('successful_payment', async (ctx) => {
-  const userId = ctx.from.id;
-  
-  await pool.query(
-    'INSERT INTO premium_users (user_id, valid_until) VALUES ($1, NOW() + INTERVAL \'30 days\') ON CONFLICT (user_id) DO UPDATE SET valid_until = NOW() + INTERVAL \'30 days\'',
-    [userId]
-  );
-  
-  await ctx.reply(
-    '✅ **Оплата прошла успешно!**\n\n' +
-    '⭐ Премиум-доступ активирован на 30 дней.\n' +
-    'Все премиум функции теперь доступны!',
-    { parse_mode: 'Markdown' }
-  );
 });
 
 // ==================== EXPRESS СЕРВЕР ====================
@@ -904,6 +908,7 @@ async function startBot() {
   console.log('✅ Бот запущен и готов к работе!');
   console.log('👀 Открывай Telegram и пиши /start');
   console.log('🎫 Промокод VIP40 - премиум навсегда для 40 человек');
+  console.log('😈 Премиум用户可以 переключать режим общения!');
 }
 
 startBot().catch(err => {
