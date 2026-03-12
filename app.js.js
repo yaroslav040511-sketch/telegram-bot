@@ -52,6 +52,28 @@ async function initDatabase() {
       )
     `);
     
+    // Таблица промокодов
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS promocodes (
+        id SERIAL PRIMARY KEY,
+        code VARCHAR(50) UNIQUE NOT NULL,
+        max_uses INTEGER NOT NULL,
+        used_count INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    
+    // Таблица использованных промокодов
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS promocode_uses (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        promocode_id INTEGER REFERENCES promocodes(id),
+        used_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    
     // Таблица бюджетов
     await pool.query(`
       CREATE TABLE IF NOT EXISTS budgets (
@@ -66,6 +88,19 @@ async function initDatabase() {
     `);
     
     console.log('✅ Все таблицы созданы');
+    
+    // Создаем промокод VIP40 если его еще нет
+    const checkPromo = await pool.query('SELECT * FROM promocodes WHERE code = $1', ['VIP40']);
+    
+    if (checkPromo.rows.length === 0) {
+      await pool.query(
+        'INSERT INTO promocodes (code, max_uses, used_count, is_active) VALUES ($1, $2, $3, $4)',
+        ['VIP40', 40, 0, true]
+      );
+      console.log('🎫 Промокод VIP40 создан! (40 использований)');
+    } else {
+      console.log(`🎫 Промокод VIP40 уже существует, использовано: ${checkPromo.rows[0].used_count}/40`);
+    }
     
     const testQuery = await pool.query('SELECT COUNT(*) FROM transactions');
     console.log(`📊 Всего записей в базе: ${testQuery.rows[0].count}`);
@@ -116,6 +151,20 @@ async function isPremium(userId) {
   }
 }
 
+// ==================== АКТИВАЦИЯ ПРЕМИУМ ====================
+async function activatePremium(userId, days = 9999) {
+  try {
+    await pool.query(
+      'INSERT INTO premium_users (user_id, valid_until) VALUES ($1, NOW() + $2::interval) ON CONFLICT (user_id) DO UPDATE SET valid_until = NOW() + $2::interval',
+      [userId, `${days} days`]
+    );
+    return true;
+  } catch (err) {
+    console.error('Ошибка активации премиум:', err);
+    return false;
+  }
+}
+
 // ==================== СОЗДАНИЕ БОТА ====================
 const bot = new Telegraf(token);
 
@@ -125,14 +174,14 @@ const bot = new Telegraf(token);
 const mainMenu = Markup.keyboard([
   ['💰 Добавить доход', '💸 Добавить расход'],
   ['📊 Статистика', '📈 Бюджеты'],
-  ['⭐ Премиум', '📋 Мои записи'],
-  ['❓ Помощь']
+  ['⭐ Премиум', '🎫 Промокод'],
+  ['📋 Мои записи', '❓ Помощь']
 ]).resize();
 
 // Кнопка отмены (возврат в меню)
 const backToMenu = Markup.keyboard(['🔙 В главное меню']).resize();
 
-// Состояния пользователей (чтобы знать, ждем ли мы сумму)
+// Состояния пользователей
 const userStates = new Map();
 
 // ==================== КОМАНДЫ ====================
@@ -153,6 +202,8 @@ bot.start(async (ctx) => {
 • Статистика по дням/месяцам/годам
 • Бюджеты и лимиты
 • Премиум-функции
+
+🎫 **Промокод VIP40** - премиум навсегда для первых 40 человек!
 
 ⬇️ Используй кнопки ниже ⬇️
   `;
@@ -175,12 +226,9 @@ bot.help(async (ctx) => {
 
 📊 **Статистика:**
 /stats - вся статистика
-/stats week - за неделю
-/stats month - за месяц
-/stats year - за год
 
-📈 **Бюджеты:**
-/budget - управление бюджетами
+🎫 **Промокоды:**
+/promo - активировать промокод
 
 ⭐ **Премиум:**
 /premium - информация о премиум-доступе
@@ -221,6 +269,11 @@ bot.hears('⭐ Премиум', async (ctx) => {
   await showPremium(ctx);
 });
 
+bot.hears('🎫 Промокод', async (ctx) => {
+  userStates.set(ctx.from.id, 'waiting_promo');
+  await ctx.reply('🎫 Введите промокод:', backToMenu);
+});
+
 bot.hears('📋 Мои записи', async (ctx) => {
   try {
     const userId = ctx.from.id;
@@ -254,33 +307,30 @@ bot.hears('❓ Помощь', async (ctx) => {
   ctx.help();
 });
 
-// СТАТИСТИКА
+// КОМАНДА /stats
 bot.command('stats', async (ctx) => {
-  const text = ctx.message.text;
-  const parts = text.split(' ');
-  let period = parts[1] || 'all';
-  await showStats(ctx, period);
+  await showStats(ctx, 'all');
 });
 
+// КОМАНДА /promo
+bot.command('promo', async (ctx) => {
+  userStates.set(ctx.from.id, 'waiting_promo');
+  await ctx.reply('🎫 Введите промокод:', backToMenu);
+});
+
+// ==================== СТАТИСТИКА ====================
 async function showStats(ctx, period = 'all') {
   try {
     const userId = ctx.from.id;
     
-    let interval = '9999 days';
-    let periodText = 'за всё время';
+    console.log(`🔍 Проверка для user ${userId}`);
     
-    if (period === 'week') {
-      interval = '7 days';
-      periodText = 'за неделю';
-    } else if (period === 'month') {
-      interval = '30 days';
-      periodText = 'за месяц';
-    } else if (period === 'year') {
-      interval = '365 days';
-      periodText = 'за год';
-    }
-    
-    console.log(`📊 Stats for user ${userId}, interval: ${interval}`);
+    // Сначала проверим, есть ли вообще транзакции
+    const allTx = await pool.query(
+      'SELECT COUNT(*) as count FROM transactions WHERE user_id = $1',
+      [userId]
+    );
+    console.log(`📊 Всего транзакций в базе: ${allTx.rows[0].count}`);
     
     // Получаем доходы
     const incomes = await pool.query(`
@@ -289,12 +339,10 @@ async function showStats(ctx, period = 'all') {
         SUM(amount) as total,
         COUNT(*) as count
       FROM transactions 
-      WHERE user_id = $1 
-        AND type = 'income'
-        AND date > NOW() - $2::interval
+      WHERE user_id = $1 AND type = 'income'
       GROUP BY category
       ORDER BY total DESC
-    `, [userId, interval]);
+    `, [userId]);
     
     // Получаем расходы
     const expenses = await pool.query(`
@@ -303,19 +351,17 @@ async function showStats(ctx, period = 'all') {
         SUM(amount) as total,
         COUNT(*) as count
       FROM transactions 
-      WHERE user_id = $1 
-        AND type = 'expense'
-        AND date > NOW() - $2::interval
+      WHERE user_id = $1 AND type = 'expense'
       GROUP BY category
       ORDER BY total DESC
-    `, [userId, interval]);
+    `, [userId]);
     
-    console.log(`📊 Found ${incomes.rows.length} income categories, ${expenses.rows.length} expense categories`);
+    console.log(`💰 Найдено доходов: ${incomes.rows.length}, расходов: ${expenses.rows.length}`);
     
     const totalIncome = incomes.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
     const totalExpense = expenses.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
     
-    let message = `📊 **Статистика ${periodText}:**\n\n`;
+    let message = `📊 **Статистика за всё время:**\n\n`;
     
     if (incomes.rows.length > 0) {
       message += '💰 **Доходы:**\n';
@@ -342,14 +388,7 @@ async function showStats(ctx, period = 'all') {
     if (balance > 0) message += ' ✅';
     else if (balance < 0) message += ' ⚠️';
     
-    // Добавляем кнопки для быстрой статистики
-    const statsKeyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('📅 Неделя', 'stats_week')],
-      [Markup.button.callback('📅 Месяц', 'stats_month'), Markup.button.callback('📅 Год', 'stats_year')],
-      [Markup.button.callback('📊 Всё время', 'stats_all')]
-    ]);
-    
-    await ctx.reply(message, { parse_mode: 'Markdown', ...statsKeyboard });
+    await ctx.reply(message, { parse_mode: 'Markdown' });
     
   } catch (err) {
     console.error('❌ Ошибка статистики:', err);
@@ -357,49 +396,65 @@ async function showStats(ctx, period = 'all') {
   }
 }
 
-// Обработка инлайн-кнопок статистики
-bot.action(/stats_(.+)/, async (ctx) => {
-  const period = ctx.match[1];
-  await ctx.deleteMessage();
-  await showStats(ctx, period);
-});
-
-// ТЕСТ
-bot.command('test', async (ctx) => {
+// ==================== ПРОМОКОДЫ ====================
+async function activatePromo(userId, promoCode) {
   try {
-    const userId = ctx.from.id;
-    const result = await pool.query('SELECT NOW() as time');
-    const count = await pool.query('SELECT COUNT(*) FROM transactions WHERE user_id = $1', [userId]);
+    // Проверяем, активировал ли пользователь уже этот промокод
+    const usedCheck = await pool.query(`
+      SELECT pu.*, p.code FROM promocode_uses pu
+      JOIN promocodes p ON pu.promocode_id = p.id
+      WHERE pu.user_id = $1 AND p.code = $2
+    `, [userId, promoCode]);
     
-    const lastTx = await pool.query(
-      'SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC LIMIT 5',
-      [userId]
-    );
-    
-    let txList = '';
-    if (lastTx.rows.length > 0) {
-      txList = '\n\n📋 **Последние записи:**\n';
-      lastTx.rows.forEach((tx, i) => {
-        const emoji = tx.type === 'income' ? '💰' : '💸';
-        const date = new Date(tx.date).toLocaleString('ru-RU');
-        txList += `${emoji} ${tx.amount}₽ - ${tx.category} (${tx.description})\n   🕐 ${date}\n`;
-      });
+    if (usedCheck.rows.length > 0) {
+      return { success: false, message: '❌ Вы уже активировали этот промокод' };
     }
     
-    await ctx.reply(
-      `✅ **База данных подключена!**\n` +
-      `🕐 Время сервера: ${result.rows[0].time}\n` +
-      `📊 Ваших транзакций: ${count.rows[0].count}` +
-      txList,
-      { parse_mode: 'Markdown' }
+    // Проверяем промокод
+    const promo = await pool.query(
+      'SELECT * FROM promocodes WHERE code = $1 AND is_active = true',
+      [promoCode]
     );
+    
+    if (promo.rows.length === 0) {
+      return { success: false, message: '❌ Промокод не найден' };
+    }
+    
+    const promoData = promo.rows[0];
+    
+    if (promoData.used_count >= promoData.max_uses) {
+      return { success: false, message: '❌ Промокод больше недействителен (лимит использований)' };
+    }
+    
+    // Активируем премиум навсегда (9999 дней ≈ 27 лет)
+    await activatePremium(userId, 9999);
+    
+    // Записываем использование промокода
+    await pool.query(
+      'INSERT INTO promocode_uses (user_id, promocode_id) VALUES ($1, $2)',
+      [userId, promoData.id]
+    );
+    
+    // Увеличиваем счетчик использований
+    await pool.query(
+      'UPDATE promocodes SET used_count = used_count + 1 WHERE id = $1',
+      [promoData.id]
+    );
+    
+    const remaining = promoData.max_uses - promoData.used_count - 1;
+    
+    return { 
+      success: true, 
+      message: `✅ **Промокод активирован!**\n\n⭐ Премиум-доступ навсегда активирован!\n\nОсталось активаций: ${remaining}` 
+    };
+    
   } catch (err) {
-    console.error('❌ Ошибка теста БД:', err);
-    ctx.reply('❌ Ошибка подключения к базе данных');
+    console.error('❌ Ошибка активации промокода:', err);
+    return { success: false, message: '❌ Ошибка активации промокода' };
   }
-});
+}
 
-// ПРЕМИУМ
+// ==================== ПРЕМИУМ ====================
 bot.command('premium', async (ctx) => {
   await showPremium(ctx);
 });
@@ -423,63 +478,27 @@ async function showPremium(ctx) {
       { parse_mode: 'Markdown', ...mainMenu }
     );
   } else {
-    const premiumKeyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('💎 Купить за 100 Telegram Stars', 'buy_premium')],
-      [Markup.button.url('📱 Оплатить через ЮKassa', 'https://t.me/xxx')]
-    ]);
+    // Информация о промокоде
+    const promoInfo = await pool.query('SELECT used_count, max_uses FROM promocodes WHERE code = $1', ['VIP40']);
+    const used = promoInfo.rows[0]?.used_count || 0;
+    const max = promoInfo.rows[0]?.max_uses || 40;
+    const remaining = max - used;
     
     await ctx.reply(
       `⭐ **Премиум-доступ**\n\n` +
       `**Что дает премиум:**\n` +
-      `• 📊 Расширенная статистика с графиками\n` +
-      `• 📈 Бюджеты и лимиты по категориям\n` +
+      `• 📊 Расширенная статистика\n` +
+      `• 📈 Бюджеты и лимиты\n` +
       `• 📉 Прогнозы и аналитика\n` +
-      `• 📎 Экспорт в Excel/CSV\n` +
-      `• 🔔 Уведомления о превышении бюджета\n` +
-      `• ⭐ Приоритетная поддержка\n\n` +
-      `**Стоимость:** 100 Telegram Stars в месяц\n` +
-      `**Годовая подписка:** 1000 Stars (скидка 20%)`,
-      { parse_mode: 'Markdown', ...premiumKeyboard }
+      `• 📎 Экспорт в Excel\n` +
+      `• 🔔 Уведомления\n\n` +
+      `🎫 **Промокод VIP40**\n` +
+      `Осталось активаций: ${remaining}/40\n` +
+      `Активируй и получи премиум НАВСЕГДА бесплатно!`,
+      { parse_mode: 'Markdown', ...mainMenu }
     );
   }
 }
-
-bot.action('buy_premium', async (ctx) => {
-  await ctx.answerCbQuery();
-  
-  // Telegram Stars платеж
-  await ctx.replyWithInvoice({
-    title: '⭐ Премиум-подписка на месяц',
-    description: 'Доступ ко всем премиум-функциям на 30 дней',
-    payload: 'premium_month',
-    provider_token: '',
-    currency: 'XTR',
-    prices: [{ label: 'Премиум', amount: 100 }],
-    start_parameter: 'premium-payment'
-  });
-});
-
-// Обработка успешной оплаты
-bot.on('pre_checkout_query', async (ctx) => {
-  await ctx.answerPreCheckoutQuery(true);
-});
-
-bot.on('successful_payment', async (ctx) => {
-  const userId = ctx.from.id;
-  
-  // Активируем премиум на 30 дней
-  await pool.query(
-    'INSERT INTO premium_users (user_id, valid_until) VALUES ($1, NOW() + INTERVAL \'30 days\') ON CONFLICT (user_id) DO UPDATE SET valid_until = NOW() + INTERVAL \'30 days\'',
-    [userId]
-  );
-  
-  await ctx.reply(
-    '✅ **Оплата прошла успешно!**\n\n' +
-    'Премиум-доступ активирован на 30 дней.\n' +
-    'Спасибо за поддержку! 🙏',
-    { parse_mode: 'Markdown', ...mainMenu }
-  );
-});
 
 // ==================== ОБРАБОТКА ТЕКСТА ====================
 bot.on('text', async (ctx) => {
@@ -495,9 +514,19 @@ bot.on('text', async (ctx) => {
         text === '📊 Статистика' ||
         text === '📈 Бюджеты' ||
         text === '⭐ Премиум' ||
+        text === '🎫 Промокод' ||
         text === '📋 Мои записи' ||
         text === '❓ Помощь' ||
         text === '🔙 В главное меню') {
+      return;
+    }
+    
+    // Обработка промокода
+    if (state === 'waiting_promo') {
+      const result = await activatePromo(userId, text.trim().toUpperCase());
+      userStates.delete(userId);
+      await ctx.reply(result.message, { parse_mode: 'Markdown' });
+      await ctx.reply('Главное меню:', mainMenu);
       return;
     }
     
@@ -513,7 +542,7 @@ bot.on('text', async (ctx) => {
     let amount = parseFloat(match[0].replace(/\s/g, '').replace(',', '.'));
     const description = text.replace(match[0], '').trim() || 'без описания';
     
-    // Определяем тип в зависимости от состояния или текста
+    // Определяем тип
     let type = 'expense';
     const incomeKeywords = ['зарплата', 'доход', 'аванс', 'зп', 'перевод', 'премия', 'бонус', 'заработок', 'фриланс'];
     const isIncome = incomeKeywords.some(keyword => text.toLowerCase().includes(keyword));
@@ -544,7 +573,7 @@ bot.on('text', async (ctx) => {
       { parse_mode: 'Markdown' }
     );
     
-    // Очищаем состояние и возвращаем в главное меню
+    // Очищаем состояние и возвращаем в меню
     userStates.delete(userId);
     await ctx.reply('Что делаем дальше?', mainMenu);
     
@@ -576,6 +605,7 @@ async function startBot() {
   await bot.launch();
   console.log('✅ Бот запущен и готов к работе!');
   console.log('👀 Открывай Telegram и пиши /start');
+  console.log('🎫 Промокод VIP40 - премиум навсегда для 40 человек');
 }
 
 startBot().catch(err => {
