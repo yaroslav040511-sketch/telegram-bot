@@ -481,107 +481,99 @@ bot.hears('🎯 Цели', async (ctx) => {
     backToMenu
   );
 });
-
-// AI совет (премиум) - ИСПРАВЛЕННАЯ ВЕРСИЯ
+// AI совет (премиум) - ИСПРАВЛЕННАЯ ВЕРСИЯ (берет все данные)
 bot.hears('🤖 AI совет', async (ctx) => {
   const userId = ctx.from.id;
   if (!await checkPremium(ctx, 'advice')) return;
   
   try {
-    // Получаем данные за последние 30 дней
+    console.log(`🤖 AI анализ для user ${userId} - начинаем...`);
+    
+    // Получаем ВСЕ расходы пользователя (без ограничения по времени)
     const expenses = await pool.query(`
       SELECT category, SUM(amount) as total, COUNT(*) as count
       FROM transactions 
-      WHERE user_id = $1 AND type = 'expense' AND date > NOW() - INTERVAL '30 days'
+      WHERE user_id = $1 AND type = 'expense'
       GROUP BY category
       ORDER BY total DESC
     `, [userId]);
     
-    // Получаем общую сумму доходов за 30 дней
+    console.log(`📊 Найдено расходов: ${expenses.rows.length}`);
+    
+    // Получаем ВСЕ доходы
     const incomes = await pool.query(`
       SELECT SUM(amount) as total
       FROM transactions 
-      WHERE user_id = $1 AND type = 'income' AND date > NOW() - INTERVAL '30 days'
+      WHERE user_id = $1 AND type = 'income'
     `, [userId]);
     
     const totalIncome = parseFloat(incomes.rows[0]?.total || 0);
     const totalExpense = expenses.rows.reduce((sum, row) => sum + parseFloat(row.total), 0);
     
-    console.log(`🤖 AI анализ: найдено ${expenses.rows.length} категорий, доход=${totalIncome}, расход=${totalExpense}`);
+    console.log(`💰 Доходы: ${totalIncome}, Расходы: ${totalExpense}`);
     
-    if (expenses.rows.length === 0) {
-      await ctx.reply(
-        '🤖 **AI-анализ ваших трат:**\n\n' +
-        '📊 Пока недостаточно данных для анализа.\n' +
-        '💡 Добавьте больше трат, чтобы получить персональные советы!\n\n' +
-        'Примеры: "кофе 300", "такси 500", "продукты 2000"'
+    // Проверяем, есть ли данные для анализа
+    if (expenses.rows.length === 0 || totalExpense === 0) {
+      console.log('❌ Нет данных для анализа');
+      
+      // Проверим, есть ли вообще транзакции
+      const anyTx = await pool.query(
+        'SELECT COUNT(*) FROM transactions WHERE user_id = $1',
+        [userId]
       );
+      
+      if (parseInt(anyTx.rows[0].count) > 0) {
+        await ctx.reply(
+          '🤖 **AI-анализ:**\n\n' +
+          `📊 Найдено транзакций: ${anyTx.rows[0].count}\n` +
+          '❌ Но среди них нет расходов (только доходы).\n' +
+          'Добавьте расходы, например: "кофе 300", "такси 500"'
+        );
+      } else {
+        await ctx.reply(
+          '🤖 **AI-анализ:**\n\n' +
+          '📊 Пока нет данных для анализа.\n' +
+          'Добавьте траты, чтобы получить персональные советы!\n\n' +
+          'Примеры: "кофе 300", "такси 500", "продукты 2000"'
+        );
+      }
       return;
     }
     
-    let advice = '🤖 **AI-анализ ваших трат за 30 дней:**\n\n';
+    // Формируем анализ
+    let advice = '🤖 **AI-анализ ваших финансов:**\n\n';
     
-    // Общий анализ
     if (totalIncome > 0) {
       const savingsRate = ((totalIncome - totalExpense) / totalIncome * 100).toFixed(1);
-      advice += `💰 **Доход:** ${totalIncome.toFixed(0)}₽\n`;
-      advice += `💸 **Расход:** ${totalExpense.toFixed(0)}₽\n`;
-      advice += `📊 **Накопления:** ${(totalIncome - totalExpense).toFixed(0)}₽ (${savingsRate}% от дохода)\n\n`;
-      
-      if (savingsRate < 10) {
-        advice += '⚠️ **Совет:** Вы тратите почти всё! Постарайтесь откладывать хотя бы 10-20% от дохода.\n\n';
-      } else if (savingsRate > 30) {
-        advice += '✅ **Отлично!** Вы много откладываете. Так держать!\n\n';
-      }
+      advice += `💰 **Доходы:** ${totalIncome.toFixed(0)}₽\n`;
+      advice += `💸 **Расходы:** ${totalExpense.toFixed(0)}₽\n`;
+      advice += `📊 **Накопления:** ${(totalIncome - totalExpense).toFixed(0)}₽ (${savingsRate}%)\n\n`;
     }
     
-    // Анализ по категориям
-    advice += '📌 **Детальный анализ:**\n';
+    advice += '📌 **Анализ расходов:**\n';
     
     expenses.rows.forEach(row => {
-      const category = row.category;
       const amount = parseFloat(row.total);
-      const count = parseInt(row.count);
       const percent = ((amount / totalExpense) * 100).toFixed(1);
       
-      advice += `\n${category}: ${amount.toFixed(0)}₽ (${percent}% от всех трат)\n`;
+      advice += `\n${row.category}: ${amount.toFixed(0)}₽ (${percent}%)\n`;
       
-      // Персональные советы по категориям
-      if (category.includes('🍔 Еда') && amount > 10000) {
-        advice += `   💡 Многовато на еду! Попробуй готовить дома - экономия до 30%\n`;
-      } else if (category.includes('🍔 Еда') && amount < 3000) {
-        advice += `   👍 Отлично экономишь на еде!\n`;
+      if (row.category.includes('🍔 Еда') && amount > 10000) {
+        advice += `   💡 Много на еду! Готовь дома чаще\n`;
       }
-      
-      if (category.includes('🚗 Транспорт') && amount > 5000) {
-        advice += `   💡 Возможно, стоит купить проездной или ходить пешком чаще\n`;
+      if (row.category.includes('🚗 Транспорт') && amount > 5000) {
+        advice += `   💡 Дорогой транспорт - может проездной?\n`;
       }
-      
-      if (category.includes('🎮 Развлечения') && amount > 5000) {
-        advice += `   💡 Много на развлечения - может, найдешь бесплатные альтернативы?\n`;
-      }
-      
-      if (category.includes('🎁 Подарки') && amount > 3000) {
-        advice += `   💡 Подарки - это приятно, но может объединиться с друзьями?\n`;
-      }
-      
-      if (count > 10 && category.includes('🍔 Еда')) {
-        advice += `   💡 Ты покупаешь еду ${count} раз в месяц! Может, реже?\n`;
-      }
-      
-      if (category.includes('🏥 Здоровье') && amount < 1000) {
-        advice += `   💡 Здоровье важно! Не забывай про профилактику\n`;
+      if (row.category.includes('🎮 Развлечения') && amount > 5000) {
+        advice += `   💡 Много на развлечения - есть бесплатные варианты?\n`;
       }
     });
     
-    // Итоговый совет
-    advice += '\n🎯 **Главный совет:**\n';
-    
-    const topCategory = expenses.rows[0];
-    if (topCategory) {
-      advice += `Больше всего тратишь на ${topCategory.category} - `;
-      advice += `это ${((parseFloat(topCategory.total)/totalExpense)*100).toFixed(1)}% всех расходов. `;
-      advice += `Попробуй сократить эту категорию на 10% в следующем месяце!`;
+    advice += '\n🎯 **Итог:**\n';
+    if (totalIncome - totalExpense > 0) {
+      advice += `✅ Вы в плюсе! Откладывайте ${((totalIncome - totalExpense) * 0.2).toFixed(0)}₽ в копилку`;
+    } else {
+      advice += '⚠️ Вы тратите больше, чем зарабатываете! Срочно сокращайте расходы';
     }
     
     await ctx.reply(advice);
